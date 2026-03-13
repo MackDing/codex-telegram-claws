@@ -21,12 +21,14 @@ const bot = new Telegraf(config.telegram.botToken, {
 const stateStore = new RuntimeStateStore({ config });
 let mcpClient;
 let skillRegistry;
+let ptyManager;
 
 async function saveRuntimeState() {
-  if (!mcpClient || !skillRegistry) return;
+  if (!mcpClient || !skillRegistry || !ptyManager) return;
   await stateStore.save({
     mcp: mcpClient.exportState(),
-    skills: skillRegistry.exportState()
+    skills: skillRegistry.exportState(),
+    runner: ptyManager.exportState()
   });
 }
 
@@ -79,10 +81,12 @@ const router = new Router({
   isSkillEnabled: (chatId, skillName) => skillRegistry.isEnabled(chatId, skillName)
 });
 
-const ptyManager = new PtyManager({
+ptyManager = new PtyManager({
   bot,
-  config
+  config,
+  onChange: () => void saveRuntimeState()
 });
+ptyManager.restoreState(runtimeState.runner);
 const shellManager = new ShellManager({
   config
 });

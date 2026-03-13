@@ -127,7 +127,7 @@ General:
 - `/repo <keyword>` - fuzzy match projects; switch if only one match, otherwise list candidates
 - `/repo recent` - show recent projects for the current chat
 - `/repo -` - switch back to the previous project
-- `/new` - close current session and start fresh on the next message
+- `/new` - clear the saved Codex conversation for the current project and start fresh on the next message
 - `/exec <task>` - force a one-off `codex exec`
 - `/auto <task>` - force a one-off `codex exec --full-auto`
 - `/plan <task>` - ask Codex for a plan only, without direct file modification intent
@@ -167,6 +167,7 @@ Telegram adaptation notes:
 - `/exec` behaves like `codex exec "task"`
 - `/auto` behaves like `codex exec --full-auto "task"`
 - `/new` is implemented by the bot and resets the current chat session
+- `/new` only clears the current project's saved Codex conversation slot
 - `/status` is implemented by the bot and reports local runtime state
 - `/repo` is implemented by the bot and switches the per-chat working directory inside `WORKSPACE_ROOT`
 - `/skill` is implemented by the bot and keeps per-chat skill switches in runtime state
@@ -185,6 +186,16 @@ PTY output is streamed with throttled `editMessageText` updates.
   - spoiler (`||...||`, default)
   - quote block (if `REASONING_RENDER_MODE=quote`)
 - If `node-pty` cannot spawn on the current host, the runner falls back to `codex exec` for per-request execution
+
+## Project-Scoped Conversation State
+
+Conversation state is now tracked per `chat + project`, not just per chat.
+
+- When you switch with `/repo <name>`, the bot keeps that project's last Codex session id in runtime state
+- When you switch back to the same project later, the next plain-text task resumes that project's Codex conversation
+- `/new` clears only the current project's saved conversation slot; other projects in the same Telegram chat are untouched
+- `/exec`, `/auto`, and `/plan` stay one-off by design and do not replace the saved project conversation
+- On hosts where PTY is unavailable, project restore still works through `codex exec resume`
 
 ## Event-Driven Automation
 
@@ -278,7 +289,7 @@ Telegram can manage runtime usage of Bot-side MCP and skills, but not install ar
 - MCP servers are process-level runtime resources: list, inspect, reconnect, enable, disable
 - Skills are chat-level routing switches: each chat can enable or disable `github` and `mcp` independently
 - Codex's own MCP remains separate and is not managed through these bot commands
-- Runtime state is persisted to `STATE_FILE`, so `/mcp enable|disable` and `/skill on|off` survive bot restarts
+- Runtime state is persisted to `STATE_FILE`, so `/mcp enable|disable`, `/skill on|off`, and per-project Codex conversation slots survive bot restarts
 
 ## Troubleshooting
 

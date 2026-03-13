@@ -6,6 +6,9 @@ function defaultState() {
     mcp: {
       disabledServers: []
     },
+    runner: {
+      chats: {}
+    },
     skills: {
       chats: {}
     }
@@ -28,6 +31,10 @@ export class RuntimeStateStore {
         mcp: {
           ...defaultState().mcp,
           ...(parsed?.mcp || {})
+        },
+        runner: {
+          ...defaultState().runner,
+          ...(parsed?.runner || {})
         },
         skills: {
           ...defaultState().skills,

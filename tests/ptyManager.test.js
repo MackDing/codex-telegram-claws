@@ -132,3 +132,56 @@ test("pty manager tracks recent projects and can switch back to the previous wor
   assert.equal(previous.relativePath, "project-b");
   assert.equal(manager.getStatus(77).relativeWorkdir, "project-b");
 });
+
+test("pty manager keeps project conversation slots isolated per workdir", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "claws-project-sessions-"));
+  const projectA = path.join(root, "project-a");
+  const projectB = path.join(root, "project-b");
+  fs.mkdirSync(projectA, { recursive: true });
+  fs.mkdirSync(projectB, { recursive: true });
+  fs.mkdirSync(path.join(projectA, ".git"));
+  fs.mkdirSync(path.join(projectB, ".git"));
+
+  const manager = createManager({
+    workspaceRoot: root,
+    runnerCwd: projectA
+  });
+
+  manager.getProjectState(55, projectA).lastSessionId = "11111111-1111-1111-1111-111111111111";
+  manager.switchWorkdir(55, "project-b");
+  manager.getProjectState(55, projectB).lastSessionId = "22222222-2222-2222-2222-222222222222";
+
+  assert.equal(manager.getStatus(55).projectSessionId, "22222222-2222-2222-2222-222222222222");
+
+  manager.switchWorkdir(55, "project-a");
+  assert.equal(manager.getStatus(55).projectSessionId, "11111111-1111-1111-1111-111111111111");
+});
+
+test("pty manager exports and restores per-project conversation state", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "claws-project-export-"));
+  const projectA = path.join(root, "project-a");
+  const projectB = path.join(root, "project-b");
+  fs.mkdirSync(projectA, { recursive: true });
+  fs.mkdirSync(projectB, { recursive: true });
+  fs.mkdirSync(path.join(projectA, ".git"));
+  fs.mkdirSync(path.join(projectB, ".git"));
+
+  const manager = createManager({
+    workspaceRoot: root,
+    runnerCwd: projectA
+  });
+  manager.getProjectState(99, projectA).lastSessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  manager.switchWorkdir(99, "project-b");
+  manager.getProjectState(99, projectB).lastSessionId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
+  const restored = createManager({
+    workspaceRoot: root,
+    runnerCwd: projectA
+  });
+  restored.restoreState(manager.exportState());
+
+  assert.equal(restored.getStatus(99).relativeWorkdir, "project-b");
+  assert.equal(restored.getStatus(99).projectSessionId, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+  restored.switchWorkdir(99, "project-a");
+  assert.equal(restored.getStatus(99).projectSessionId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+});

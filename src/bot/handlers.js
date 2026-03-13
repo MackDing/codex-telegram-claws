@@ -125,6 +125,7 @@ export function registerHandlers({
         `workspace root: ${status.workspaceRoot}`,
         `workdir: ${status.workdir}`,
         `recent projects: ${ptyManager.getRecentProjects(ctx.chat.id).map((item) => item.relativePath).join(", ") || "."}`,
+        `project context: ${status.projectSessionId ? `resumable (${status.projectSessionId})` : "fresh"}`,
         `safe shell: ${
           shellManager.isEnabled()
             ? `enabled, ${shellManager.isReadOnly() ? "read-only" : "writable"} (${shellManager.getAllowedCommands().length} prefixes)`
@@ -298,12 +299,12 @@ export function registerHandlers({
   });
 
   bot.command("new", async (ctx) => {
-    const closed = ptyManager.closeSession(ctx.chat.id);
+    const result = ptyManager.resetCurrentProjectConversation(ctx.chat.id);
     await sendChunkedMarkdown(
       ctx,
-      closed
-        ? "当前会话已关闭。下一条消息会启动一个新的 Codex 会话。"
-        : "当前没有活动会话。下一条消息会启动新的 Codex 会话。"
+      result.closed
+        ? "当前项目的会话上下文已清空，并关闭了活动会话。下一条消息会在当前项目启动全新 Codex 会话。"
+        : "当前项目的会话上下文已清空。下一条消息会在当前项目启动全新 Codex 会话。"
     );
   });
 

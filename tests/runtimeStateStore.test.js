@@ -20,6 +20,19 @@ test("runtime state store saves and loads MCP and skill state", async () => {
     mcp: {
       disabledServers: ["context7"]
     },
+    runner: {
+      chats: {
+        "42": {
+          currentWorkdir: "project-a",
+          recentWorkdirs: ["project-a", "project-b"],
+          projects: {
+            "project-a": {
+              lastSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            }
+          }
+        }
+      }
+    },
     skills: {
       chats: {
         "42": {
@@ -33,6 +46,19 @@ test("runtime state store saves and loads MCP and skill state", async () => {
 
   assert.deepEqual(state.mcp, {
     disabledServers: ["context7"]
+  });
+  assert.deepEqual(state.runner, {
+    chats: {
+      "42": {
+        currentWorkdir: "project-a",
+        recentWorkdirs: ["project-a", "project-b"],
+        projects: {
+          "project-a": {
+            lastSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+          }
+        }
+      }
+    }
   });
   assert.deepEqual(state.skills, {
     chats: {

@@ -15,10 +15,16 @@ function isPtySpawnFailure(error) {
   return String(error?.message || "").includes("posix_spawnp failed");
 }
 
+function extractSessionId(rawText) {
+  const matched = String(rawText || "").match(/session id:\s*([0-9a-f-]{36})/i);
+  return matched?.[1] || "";
+}
+
 export class PtyManager {
-  constructor({ bot, config }) {
+  constructor({ bot, config, onChange }) {
     this.bot = bot;
     this.config = config;
+    this.onChange = onChange;
     this.sessions = new Map();
     this.chatState = new Map();
   }
@@ -33,13 +39,39 @@ export class PtyManager {
       currentWorkdir: this.config.runner.cwd,
       recentWorkdirs: [this.config.runner.cwd],
       ptySupported: null,
+      projectStates: new Map([
+        [
+          this.config.runner.cwd,
+          {
+            lastSessionId: "",
+            lastMode: null,
+            lastExitCode: null,
+            lastExitSignal: null
+          }
+        ]
+      ])
+    };
+
+    this.chatState.set(key, state);
+    return state;
+  }
+
+  ensureProjectState(chatId, workdir = this.getWorkdir(chatId)) {
+    const key = String(chatId);
+    const state = this.ensureChatState(key);
+    const resolvedWorkdir = path.resolve(workdir || state.currentWorkdir || this.config.runner.cwd);
+    const existing = state.projectStates.get(resolvedWorkdir);
+    if (existing) return existing;
+
+    const projectState = {
+      lastSessionId: "",
       lastMode: null,
       lastExitCode: null,
       lastExitSignal: null
     };
 
-    this.chatState.set(key, state);
-    return state;
+    state.projectStates.set(resolvedWorkdir, projectState);
+    return projectState;
   }
 
   getCommandArgsForSession(chatId) {
@@ -60,6 +92,10 @@ export class PtyManager {
     const workdir = this.getWorkdir(chatId);
     const relative = path.relative(this.config.workspace.root, workdir);
     return relative || ".";
+  }
+
+  getProjectState(chatId, workdir = this.getWorkdir(chatId)) {
+    return this.ensureProjectState(chatId, workdir);
   }
 
   rememberWorkdir(state, workdir) {
@@ -143,9 +179,11 @@ export class PtyManager {
     }
 
     const state = this.ensureChatState(key);
+    this.ensureProjectState(key, targetPath);
     state.currentWorkdir = targetPath;
     this.rememberWorkdir(state, targetPath);
     this.closeSession(key);
+    this.onChange?.(this.exportState());
 
     return {
       workdir: targetPath,
@@ -167,7 +205,7 @@ export class PtyManager {
 
   getExecArgs(chatId, prompt, options = {}) {
     const state = this.ensureChatState(chatId);
-    const args = ["exec"];
+    const args = options.resumeSessionId ? ["exec", "resume"] : ["exec"];
 
     if (options.fullAuto) {
       args.push("--full-auto");
@@ -181,17 +219,38 @@ export class PtyManager {
       args.push(...options.extraArgs);
     }
 
+    if (options.resumeSessionId) {
+      args.push(options.resumeSessionId);
+    }
+
     args.push(prompt);
     return args;
   }
 
-  createBaseSession(chatId, mode) {
+  getInteractiveArgs(chatId, options = {}) {
+    const args = options.resumeSessionId
+      ? ["resume", options.resumeSessionId]
+      : this.getCommandArgsForSession(chatId);
+
+    if (options.resumeSessionId && options.initialPrompt) {
+      args.push(options.initialPrompt);
+    }
+
+    return args;
+  }
+
+  createBaseSession(chatId, mode, options = {}) {
     const key = String(chatId);
     const state = this.ensureChatState(key);
+    const workdir = path.resolve(options.workdir || state.currentWorkdir || this.config.runner.cwd);
+    const projectState = this.ensureProjectState(key, workdir);
     const session = {
       chatId: key,
       mode,
+      workdir,
       model: state.preferredModel,
+      sessionId: projectState.lastSessionId || "",
+      trackConversation: options.trackConversation !== false,
       proc: null,
       rawBuffer: "",
       streamMessageIds: [],
@@ -213,22 +272,37 @@ export class PtyManager {
     return session;
   }
 
+  captureSessionMetadata(session) {
+    if (!session.trackConversation) return;
+
+    const sessionId = extractSessionId(session.rawBuffer);
+    if (!sessionId || sessionId === session.sessionId) return;
+
+    session.sessionId = sessionId;
+    const projectState = this.ensureProjectState(session.chatId, session.workdir);
+    projectState.lastSessionId = sessionId;
+    this.onChange?.(this.exportState());
+  }
+
   attachOutput(session, stream) {
     stream.on("data", (chunk) => {
       session.rawBuffer += stripAnsi(String(chunk || "")).replace(/\r/g, "");
       if (session.rawBuffer.length > this.config.runner.maxBufferChars) {
         session.rawBuffer = session.rawBuffer.slice(-this.config.runner.maxBufferChars);
       }
+      this.captureSessionMetadata(session);
       session.throttledFlush();
     });
   }
 
   attachExit(session, handler) {
     handler(async ({ exitCode, signal }) => {
-      const state = this.ensureChatState(session.chatId);
-      state.lastMode = session.mode;
-      state.lastExitCode = exitCode;
-      state.lastExitSignal = signal;
+      this.captureSessionMetadata(session);
+      const projectState = this.ensureProjectState(session.chatId, session.workdir);
+      projectState.lastMode = session.mode;
+      projectState.lastExitCode = exitCode;
+      projectState.lastExitSignal = signal;
+      this.onChange?.(this.exportState());
 
       this.enqueueFlush(session.chatId);
       await this.bot.telegram
@@ -242,13 +316,13 @@ export class PtyManager {
     });
   }
 
-  startPtySession(chatId) {
-    const session = this.createBaseSession(chatId, "pty");
-    const proc = pty.spawn(this.config.runner.command, this.getCommandArgsForSession(chatId), {
+  startPtySession(chatId, options = {}) {
+    const session = this.createBaseSession(chatId, "pty", options);
+    const proc = pty.spawn(this.config.runner.command, this.getInteractiveArgs(chatId, options), {
       name: "xterm-256color",
       cols: 120,
       rows: 32,
-      cwd: this.getWorkdir(chatId),
+      cwd: session.workdir,
       env: {
         ...process.env,
         FORCE_COLOR: "1"
@@ -266,6 +340,7 @@ export class PtyManager {
       if (session.rawBuffer.length > this.config.runner.maxBufferChars) {
         session.rawBuffer = session.rawBuffer.slice(-this.config.runner.maxBufferChars);
       }
+      this.captureSessionMetadata(session);
       session.throttledFlush();
     });
 
@@ -274,9 +349,9 @@ export class PtyManager {
   }
 
   startExecSessionWithOptions(chatId, prompt, options = {}) {
-    const session = this.createBaseSession(chatId, "exec");
+    const session = this.createBaseSession(chatId, "exec", options);
     const proc = spawn(this.config.runner.command, this.getExecArgs(chatId, prompt, options), {
-      cwd: this.getWorkdir(chatId),
+      cwd: session.workdir,
       env: process.env
     });
 
@@ -302,13 +377,13 @@ export class PtyManager {
     return session;
   }
 
-  ensureSession(chatId) {
+  ensureSession(chatId, options = {}) {
     const key = String(chatId);
     const existing = this.sessions.get(key);
     if (existing) return existing;
 
     try {
-      return this.startPtySession(key);
+      return this.startPtySession(key, options);
     } catch (error) {
       if (!isPtySpawnFailure(error)) {
         throw error;
@@ -384,6 +459,7 @@ export class PtyManager {
 
   async sendPrompt(ctx, prompt, options = {}) {
     const chatId = String(ctx.chat.id);
+    const projectState = this.ensureProjectState(chatId);
     if (options.forceExec) {
       const running = this.sessions.get(chatId);
       if (running) {
@@ -396,7 +472,9 @@ export class PtyManager {
 
       this.startExecSessionWithOptions(chatId, prompt, {
         fullAuto: Boolean(options.fullAuto),
-        extraArgs: options.extraArgs || []
+        extraArgs: options.extraArgs || [],
+        workdir: this.getWorkdir(chatId),
+        trackConversation: false
       });
 
       if (options.notice) {
@@ -409,37 +487,72 @@ export class PtyManager {
       };
     }
 
-    let session = this.ensureSession(chatId);
+    const existingSession = this.sessions.get(chatId);
+    if (existingSession) {
+      if (existingSession.mode === "exec") {
+        return {
+          started: false,
+          reason: "busy",
+          activeMode: existingSession.mode
+        };
+      }
+
+      existingSession.write(`${prompt}\r`);
+      return {
+        started: true,
+        mode: "pty"
+      };
+    }
+
+    let session = this.ensureSession(
+      chatId,
+      projectState.lastSessionId
+        ? {
+            workdir: this.getWorkdir(chatId),
+            resumeSessionId: projectState.lastSessionId,
+            initialPrompt: prompt
+          }
+        : {
+            workdir: this.getWorkdir(chatId)
+          }
+    );
 
     if (!session) {
       session = this.startExecSessionWithOptions(chatId, prompt, {
         fullAuto: Boolean(options.fullAuto),
-        extraArgs: options.extraArgs || []
+        extraArgs: options.extraArgs || [],
+        workdir: this.getWorkdir(chatId),
+        resumeSessionId: projectState.lastSessionId || ""
       });
       await this.bot.telegram.sendMessage(
         chatId,
-        "PTY unavailable on this host. Falling back to `codex exec` mode for this request."
+        projectState.lastSessionId
+          ? "PTY unavailable on this host. Restoring the current project's Codex conversation in `codex exec resume` mode."
+          : "PTY unavailable on this host. Falling back to `codex exec` mode for this request."
       );
       return {
         started: true,
         mode: "exec",
-        fallback: true
+        fallback: true,
+        resumed: Boolean(projectState.lastSessionId)
       };
     }
 
     if (!session.streamMessageIds.length) {
       const sent = await this.bot.telegram.sendMessage(
         chatId,
-        `Codex session started (${session.mode}). Streaming output...`
+        projectState.lastSessionId
+          ? `Codex session restored for project ${this.getRelativeWorkdir(chatId)} (${session.mode}). Streaming output...`
+          : `Codex session started (${session.mode}). Streaming output...`
       );
       session.streamMessageIds.push(sent.message_id);
     }
 
-    if (session.mode === "exec") {
+    if (projectState.lastSessionId) {
       return {
-        started: false,
-        reason: "busy",
-        activeMode: session.mode
+        started: true,
+        mode: "pty",
+        resumed: true
       };
     }
 
@@ -455,6 +568,24 @@ export class PtyManager {
     if (!session) return false;
     session.interrupt?.();
     return true;
+  }
+
+  resetCurrentProjectConversation(chatId) {
+    const key = String(chatId);
+    const workdir = this.getWorkdir(key);
+    const projectState = this.ensureProjectState(key, workdir);
+    const closed = this.closeSession(key);
+
+    projectState.lastSessionId = "";
+    projectState.lastMode = null;
+    projectState.lastExitCode = null;
+    projectState.lastExitSignal = null;
+    this.onChange?.(this.exportState());
+
+    return {
+      closed,
+      workdir
+    };
   }
 
   closeSession(chatId) {
@@ -474,17 +605,123 @@ export class PtyManager {
     }
   }
 
+  serializeWorkdir(workdir) {
+    const relative = path.relative(this.config.workspace.root, workdir);
+    if (!relative) return ".";
+    return !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : workdir;
+  }
+
+  resolveStoredWorkdir(stored) {
+    if (!stored || typeof stored !== "string") return null;
+    const candidate = path.isAbsolute(stored)
+      ? path.resolve(stored)
+      : path.resolve(this.config.workspace.root, stored);
+
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+      return null;
+    }
+
+    if (!this.isInsideWorkspaceRoot(candidate)) {
+      return null;
+    }
+
+    return candidate;
+  }
+
+  exportState() {
+    const chats = {};
+
+    for (const [chatId, state] of this.chatState.entries()) {
+      const projects = {};
+      for (const [workdir, projectState] of state.projectStates.entries()) {
+        projects[this.serializeWorkdir(workdir)] = {
+          lastSessionId: projectState.lastSessionId || "",
+          lastMode: projectState.lastMode,
+          lastExitCode: projectState.lastExitCode,
+          lastExitSignal: projectState.lastExitSignal
+        };
+      }
+
+      chats[chatId] = {
+        preferredModel: state.preferredModel,
+        currentWorkdir: this.serializeWorkdir(state.currentWorkdir),
+        recentWorkdirs: (state.recentWorkdirs || []).map((workdir) => this.serializeWorkdir(workdir)),
+        projects
+      };
+    }
+
+    return {
+      chats
+    };
+  }
+
+  restoreState(snapshot = {}) {
+    const chats = snapshot?.chats;
+    if (!chats || typeof chats !== "object") return;
+
+    this.chatState.clear();
+
+    for (const [chatId, rawState] of Object.entries(chats)) {
+      const currentWorkdir =
+        this.resolveStoredWorkdir(rawState?.currentWorkdir) || this.config.runner.cwd;
+
+      const recentWorkdirs = Array.isArray(rawState?.recentWorkdirs)
+        ? rawState.recentWorkdirs
+            .map((stored) => this.resolveStoredWorkdir(stored))
+            .filter(Boolean)
+        : [];
+
+      const projectStates = new Map();
+      const rawProjects = rawState?.projects;
+      if (rawProjects && typeof rawProjects === "object") {
+        for (const [storedWorkdir, rawProjectState] of Object.entries(rawProjects)) {
+          const resolvedWorkdir = this.resolveStoredWorkdir(storedWorkdir);
+          if (!resolvedWorkdir) continue;
+
+          projectStates.set(resolvedWorkdir, {
+            lastSessionId: String(rawProjectState?.lastSessionId || "").trim(),
+            lastMode: rawProjectState?.lastMode || null,
+            lastExitCode:
+              rawProjectState?.lastExitCode === null || rawProjectState?.lastExitCode === undefined
+                ? null
+                : rawProjectState.lastExitCode,
+            lastExitSignal: rawProjectState?.lastExitSignal || null
+          });
+        }
+      }
+
+      if (!projectStates.has(currentWorkdir)) {
+        projectStates.set(currentWorkdir, {
+          lastSessionId: "",
+          lastMode: null,
+          lastExitCode: null,
+          lastExitSignal: null
+        });
+      }
+
+      this.chatState.set(String(chatId), {
+        preferredModel: rawState?.preferredModel?.trim?.() || null,
+        currentWorkdir,
+        recentWorkdirs: [currentWorkdir, ...recentWorkdirs.filter((workdir) => workdir !== currentWorkdir)].slice(0, 6),
+        ptySupported: null,
+        projectStates
+      });
+    }
+  }
+
   getStatus(chatId) {
     const key = String(chatId);
     const state = this.ensureChatState(key);
+    const projectState = this.ensureProjectState(key, state.currentWorkdir);
     const session = this.sessions.get(key);
 
     return {
       active: Boolean(session),
       activeMode: session?.mode || null,
-      lastMode: state.lastMode,
-      lastExitCode: state.lastExitCode,
-      lastExitSignal: state.lastExitSignal,
+      lastMode: projectState.lastMode,
+      lastExitCode: projectState.lastExitCode,
+      lastExitSignal: projectState.lastExitSignal,
+      projectSessionId: projectState.lastSessionId || null,
       preferredModel: state.preferredModel,
       ptySupported: state.ptySupported,
       workdir: this.getWorkdir(key),
@@ -498,11 +735,13 @@ export class PtyManager {
   setPreferredModel(chatId, model) {
     const state = this.ensureChatState(chatId);
     state.preferredModel = model?.trim() || null;
+    this.onChange?.(this.exportState());
     return state.preferredModel;
   }
 
   clearPreferredModel(chatId) {
     const state = this.ensureChatState(chatId);
     state.preferredModel = null;
+    this.onChange?.(this.exportState());
   }
 }
