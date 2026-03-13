@@ -1,17 +1,60 @@
 import { suggestClosestWord } from "../../bot/commandUtils.js";
-import { t } from "../../bot/i18n.js";
+import { t, type Locale } from "../../bot/i18n.js";
+
+interface McpServerState {
+  name: string;
+  enabled: boolean;
+  connected: boolean;
+  command?: string;
+  args?: string[];
+  cwd?: string;
+}
+
+interface McpToolDefinition {
+  name?: string;
+  description?: string;
+}
+
+interface McpClientLike {
+  hasServers(): boolean;
+  listServers(): McpServerState[];
+  reconnectServer(name: string): Promise<unknown>;
+  enableServer(name: string): Promise<unknown>;
+  disableServer(name: string): Promise<unknown>;
+  listTools(serverName: string): Promise<McpToolDefinition[]>;
+  callTool(args: {
+    serverName: string;
+    toolName: string;
+    args: Record<string, unknown>;
+  }): Promise<string>;
+}
+
+interface SkillExecutionInput {
+  text: string;
+  locale?: Locale;
+}
+
+export interface SkillExecutionResult {
+  text: string;
+  testJobId?: string;
+}
 
 export class McpSkill {
-  constructor({ mcpClient }) {
+  readonly mcpClient: McpClientLike;
+
+  constructor({ mcpClient }: { mcpClient: McpClientLike }) {
     this.mcpClient = mcpClient;
   }
 
-  supports(text) {
+  supports(text: string): boolean {
     const normalized = text.trim().toLowerCase();
     return normalized.startsWith("/mcp") || normalized.includes("mcp ");
   }
 
-  async execute({ text, locale = "en" }) {
+  async execute({
+    text,
+    locale = "en"
+  }: SkillExecutionInput): Promise<SkillExecutionResult> {
     if (!this.mcpClient.hasServers()) {
       return {
         text: t(locale, "mcpServerNotConfigured")
@@ -28,7 +71,10 @@ export class McpSkill {
     };
   }
 
-  async handleCommand(rawText, locale = "en") {
+  async handleCommand(
+    rawText: string,
+    locale: Locale = "en"
+  ): Promise<SkillExecutionResult> {
     const stripped = rawText.replace(/^\/mcp(@\w+)?\s*/i, "").trim();
     const supportedSubcommands = [
       "list",
@@ -45,7 +91,7 @@ export class McpSkill {
       };
     }
 
-    const [subcommand, ...rest] = stripped.split(" ");
+    const [subcommand = "", ...rest] = stripped.split(" ");
     if (subcommand === "list") {
       const servers = this.mcpClient.listServers();
       if (!servers.length) {
@@ -144,10 +190,12 @@ export class McpSkill {
       let args = {};
       if (jsonPart) {
         try {
-          args = JSON.parse(jsonPart);
-        } catch (error) {
+          args = JSON.parse(jsonPart) as Record<string, unknown>;
+        } catch (error: unknown) {
           return {
-            text: t(locale, "mcpJsonParseFailed", { error: error.message })
+            text: t(locale, "mcpJsonParseFailed", {
+              error: error instanceof Error ? error.message : String(error)
+            })
           };
         }
       }

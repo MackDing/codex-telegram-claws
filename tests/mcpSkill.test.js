@@ -56,6 +56,26 @@ test("mcp skill returns expanded help text when no subcommand is provided", asyn
   assert.match(result.text, /\/mcp status \[server\]/);
 });
 
+test("mcp skill returns usage text for missing call arguments", async () => {
+  const skill = createSkill();
+  const result = await skill.execute({
+    text: "/mcp call context7",
+    locale: "en"
+  });
+
+  assert.match(result.text, /\/mcp call <server> <tool>/);
+});
+
+test("mcp skill reports JSON parse errors from /mcp call", async () => {
+  const skill = createSkill();
+  const result = await skill.execute({
+    text: '/mcp call context7 search {"broken": }',
+    locale: "en"
+  });
+
+  assert.match(result.text, /Failed to parse JSON arguments/);
+});
+
 test("mcp skill returns idempotent enable feedback", async () => {
   const skill = new McpSkill({
     mcpClient: {
