@@ -9,6 +9,7 @@ const ENV_KEYS = [
   "CODEX_COMMAND",
   "CODEX_ARGS",
   "CODEX_WORKDIR",
+  "WORKSPACE_ROOT",
   "STREAM_THROTTLE_MS",
   "STREAM_BUFFER_CHARS",
   "REASONING_RENDER_MODE",
@@ -64,6 +65,7 @@ test("loadConfig parses env values into runtime config", () => {
       CODEX_COMMAND: "codex",
       CODEX_ARGS: "--approval-mode auto \"--model gpt-5\"",
       CODEX_WORKDIR: ".",
+      WORKSPACE_ROOT: ".",
       STREAM_THROTTLE_MS: "1500",
       STREAM_BUFFER_CHARS: "2048",
       REASONING_RENDER_MODE: "quote",
@@ -83,6 +85,7 @@ test("loadConfig parses env values into runtime config", () => {
   assert.deepEqual(config.telegram.allowedUserIds, ["1", "2"]);
   assert.deepEqual(config.telegram.proactiveUserIds, ["2"]);
   assert.equal(config.runner.command, "codex");
+  assert.equal(config.workspace.root, process.cwd());
   assert.deepEqual(config.runner.args, ["--approval-mode", "auto", "--model gpt-5"]);
   assert.equal(config.runner.throttleMs, 1500);
   assert.equal(config.runner.maxBufferChars, 2048);
@@ -117,6 +120,7 @@ test("loadConfig falls back to the current working directory when configured pat
       {
         BOT_TOKEN: "telegram-token",
         ALLOWED_USER_IDS: "1",
+        WORKSPACE_ROOT: "/definitely/missing/workspace-root",
         CODEX_WORKDIR: "/definitely/missing/codex-workdir",
         GITHUB_DEFAULT_WORKDIR: "/definitely/missing/github-workdir",
         MCP_SERVERS: '[{"name":"filesystem","command":"npx","cwd":"/definitely/missing/mcp-cwd"}]'
@@ -125,6 +129,7 @@ test("loadConfig falls back to the current working directory when configured pat
     )
   );
 
+  assert.equal(config.workspace.root, cwd);
   assert.equal(config.runner.cwd, cwd);
   assert.equal(config.github.defaultWorkdir, cwd);
   assert.equal(config.mcp.servers[0].cwd, cwd);

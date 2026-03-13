@@ -83,11 +83,19 @@ export function loadConfig() {
     ? rawMcpServers.map((server, index) => normalizeMcpServer(server, index)).filter(Boolean)
     : [];
   const runnerCwd = resolveDirectory(process.env.CODEX_WORKDIR, "CODEX_WORKDIR");
+  const workspaceRoot = resolveDirectory(
+    process.env.WORKSPACE_ROOT,
+    "WORKSPACE_ROOT",
+    runnerCwd
+  );
   const githubDefaultWorkdir = resolveDirectory(process.env.GITHUB_DEFAULT_WORKDIR, "GITHUB_DEFAULT_WORKDIR");
 
   return {
     app: {
       name: "codex-telegram-claws"
+    },
+    workspace: {
+      root: workspaceRoot
     },
     telegram: {
       botToken: required("BOT_TOKEN"),

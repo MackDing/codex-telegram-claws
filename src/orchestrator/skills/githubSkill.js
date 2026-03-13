@@ -39,12 +39,15 @@ function pickJobId(text, fallbackJobId) {
 export class GitHubSkill {
   constructor({ config }) {
     this.config = config;
-    this.git = simpleGit({
-      baseDir: config.github.defaultWorkdir
-    });
     this.octokit = config.github.token ? new Octokit({ auth: config.github.token }) : null;
     this.testJobs = new Map();
     this.latestTestJobId = "";
+  }
+
+  getGit(workdir) {
+    return simpleGit({
+      baseDir: workdir || this.config.github.defaultWorkdir
+    });
   }
 
   supports(text) {
@@ -55,7 +58,7 @@ export class GitHubSkill {
     );
   }
 
-  async execute({ text }) {
+  async execute({ text, workdir }) {
     const stripped = text.replace(/^\/gh(@\w+)?\s*/i, "").trim();
     const normalized = stripped.toLowerCase();
 
@@ -64,7 +67,7 @@ export class GitHubSkill {
     }
 
     if (/创建仓库|create repo|new repo/.test(normalized)) {
-      return this.createRepoFromText(stripped);
+      return this.createRepoFromText(stripped, workdir);
     }
 
     if (/测试状态|test status|status/.test(normalized)) {
@@ -72,15 +75,15 @@ export class GitHubSkill {
     }
 
     if (/运行测试|run test|playwright|e2e/.test(normalized)) {
-      return this.startTests();
+      return this.startTests(workdir);
     }
 
     if ((/推送|\bpush\b/.test(normalized) && !/提交|commit/.test(normalized))) {
-      return this.pushOnly();
+      return this.pushOnly(workdir);
     }
 
     if (/提交|推送|commit|push/.test(normalized)) {
-      return this.commitAndPush(stripped);
+      return this.commitAndPush(stripped, workdir);
     }
 
     return { text: this.helpText() };
@@ -97,8 +100,9 @@ export class GitHubSkill {
     ].join("\n");
   }
 
-  async commitAndPush(rawText) {
-    const status = await this.git.status();
+  async commitAndPush(rawText, workdir) {
+    const git = this.getGit(workdir);
+    const status = await git.status();
     if (!status.files.length) {
       return { text: "没有检测到变更，跳过 commit。" };
     }
@@ -106,21 +110,27 @@ export class GitHubSkill {
     const explicitMessage = extractQuotedMessage(rawText);
     const commitMessage = explicitMessage || buildAutoCommitMessage(status);
 
-    await this.git.add(".");
-    await this.git.commit(commitMessage);
+    await git.add(".");
+    await git.commit(commitMessage);
 
-    const branchInfo = await this.git.branch();
+    const branchInfo = await git.branch();
     const branch = branchInfo.current || this.config.github.defaultBranch;
 
     try {
-      await this.git.push("origin", branch);
+      await git.push("origin", branch);
       return {
-        text: `提交并推送成功。\nbranch: ${branch}\nmessage: ${commitMessage}`
+        text: [
+          "提交并推送成功。",
+          `workdir: ${workdir || this.config.github.defaultWorkdir}`,
+          `branch: ${branch}`,
+          `message: ${commitMessage}`
+        ].join("\n")
       };
     } catch (error) {
       return {
         text: [
           "提交完成，但推送失败。",
+          `workdir: ${workdir || this.config.github.defaultWorkdir}`,
           `branch: ${branch}`,
           `message: ${commitMessage}`,
           `error: ${error.message}`
@@ -129,16 +139,17 @@ export class GitHubSkill {
     }
   }
 
-  async pushOnly() {
-    const branchInfo = await this.git.branch();
+  async pushOnly(workdir) {
+    const git = this.getGit(workdir);
+    const branchInfo = await git.branch();
     const branch = branchInfo.current || this.config.github.defaultBranch;
-    await this.git.push("origin", branch);
+    await git.push("origin", branch);
     return {
-      text: `推送成功。\nbranch: ${branch}`
+      text: `推送成功。\nworkdir: ${workdir || this.config.github.defaultWorkdir}\nbranch: ${branch}`
     };
   }
 
-  async createRepoFromText(rawText) {
+  async createRepoFromText(rawText, workdir) {
     if (!this.octokit) {
       return { text: "缺少 GITHUB_TOKEN，无法调用 GitHub API 创建仓库。" };
     }
@@ -148,6 +159,7 @@ export class GitHubSkill {
       return { text: "无法解析仓库名。示例: /gh create repo codex-telegram-claws-demo" };
     }
 
+    const git = this.getGit(workdir);
     const isPrivate = !/public|公开/.test(rawText.toLowerCase());
     const { data: repo } = await this.octokit.repos.createForAuthenticatedUser({
       name: repoName,
@@ -155,22 +167,23 @@ export class GitHubSkill {
       auto_init: false
     });
 
-    const remotes = await this.git.getRemotes(true);
+    const remotes = await git.getRemotes(true);
     const origin = remotes.find((remote) => remote.name === "origin");
     if (!origin) {
-      await this.git.addRemote("origin", repo.clone_url);
+      await git.addRemote("origin", repo.clone_url);
     } else {
-      await this.git.remote(["set-url", "origin", repo.clone_url]);
+      await git.remote(["set-url", "origin", repo.clone_url]);
     }
 
-    const branchInfo = await this.git.branch();
+    const branchInfo = await git.branch();
     const branch = branchInfo.current || this.config.github.defaultBranch;
 
-    await this.git.push(["-u", "origin", branch]);
+    await git.push(["-u", "origin", branch]);
 
     return {
       text: [
         "仓库创建并关联成功。",
+        `workdir: ${workdir || this.config.github.defaultWorkdir}`,
         `repo: ${repo.full_name}`,
         `url: ${repo.html_url}`,
         `branch: ${branch}`
@@ -178,12 +191,13 @@ export class GitHubSkill {
     };
   }
 
-  async startTests() {
+  async startTests(workdir) {
     const jobId = `job-${Date.now()}`;
     const command = this.config.github.e2eCommand;
     const job = {
       jobId,
       status: "running",
+      workdir: workdir || this.config.github.defaultWorkdir,
       command,
       startedAt: new Date().toISOString(),
       finishedAt: "",
@@ -192,7 +206,7 @@ export class GitHubSkill {
     };
 
     const child = spawn(command, {
-      cwd: this.config.github.defaultWorkdir,
+      cwd: workdir || this.config.github.defaultWorkdir,
       env: process.env,
       shell: true
     });
@@ -225,6 +239,7 @@ export class GitHubSkill {
       text: [
         "已触发自动化测试任务。",
         `jobId: ${jobId}`,
+        `workdir: ${job.workdir}`,
         `command: ${command}`,
         "使用 /gh test status <jobId> 查询状态。"
       ].join("\n"),
@@ -247,6 +262,7 @@ export class GitHubSkill {
       text: [
         `jobId: ${job.jobId}`,
         `status: ${job.status}`,
+        `workdir: ${job.workdir}`,
         `startedAt: ${job.startedAt}`,
         job.finishedAt ? `finishedAt: ${job.finishedAt}` : "finishedAt: running",
         job.exitCode === null ? "exitCode: running" : `exitCode: ${job.exitCode}`,

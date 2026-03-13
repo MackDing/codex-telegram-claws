@@ -47,6 +47,7 @@ Minimum required:
 ```bash
 BOT_TOKEN=123456789:telegram-token
 ALLOWED_USER_IDS=123456789
+WORKSPACE_ROOT=.
 CODEX_WORKDIR=.
 ```
 
@@ -110,6 +111,9 @@ General:
 - `/start` - bootstrap message
 - `/help` - command summary
 - `/status` - show current chat status, active runner mode, workdir, model override, MCP servers
+- `/pwd` - show the current project directory for this chat
+- `/repo` - list switchable git projects under `WORKSPACE_ROOT`
+- `/repo <name>` - switch the current chat to another project
 - `/new` - close current session and start fresh on the next message
 - `/exec <task>` - force a one-off `codex exec`
 - `/auto <task>` - force a one-off `codex exec --full-auto`
@@ -139,6 +143,7 @@ Telegram adaptation notes:
 - `/auto` behaves like `codex exec --full-auto "task"`
 - `/new` is implemented by the bot and resets the current chat session
 - `/status` is implemented by the bot and reports local runtime state
+- `/repo` is implemented by the bot and switches the per-chat working directory inside `WORKSPACE_ROOT`
 - `/plan` translates to a planning-only prompt instead of passing a raw `/plan` slash command to Codex
 
 ## Streaming and Reasoning Visualization
@@ -170,6 +175,7 @@ Required:
 ```bash
 BOT_TOKEN=...
 ALLOWED_USER_IDS=123456789,987654321
+WORKSPACE_ROOT=.
 CODEX_WORKDIR=.
 ```
 
@@ -178,6 +184,7 @@ Common options:
 ```bash
 CODEX_COMMAND=codex
 CODEX_ARGS=
+WORKSPACE_ROOT=/Users/yourname/projects
 STREAM_THROTTLE_MS=1200
 STREAM_BUFFER_CHARS=120000
 REASONING_RENDER_MODE=spoiler
@@ -208,6 +215,7 @@ E2E_TEST_COMMAND=npx playwright test --reporter=line
 - Do not commit `.env`, tokens, or session artifacts
 - Run bot under a restricted OS user in production
 - Keep `CODEX_WORKDIR` scoped to a safe workspace root
+- Keep `WORKSPACE_ROOT` limited to a parent directory that only contains projects you want the bot to access
 - Prefer least-privilege GitHub PAT
 
 ## Troubleshooting

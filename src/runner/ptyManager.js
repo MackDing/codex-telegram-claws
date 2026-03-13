@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import { spawn } from "node:child_process";
+import path from "node:path";
 import process from "node:process";
 import pty from "node-pty";
 import throttle from "lodash.throttle";
@@ -28,6 +30,7 @@ export class PtyManager {
 
     const state = {
       preferredModel: null,
+      currentWorkdir: this.config.runner.cwd,
       ptySupported: null,
       lastMode: null,
       lastExitCode: null,
@@ -45,6 +48,92 @@ export class PtyManager {
       args.push("-m", state.preferredModel);
     }
     return args;
+  }
+
+  getWorkdir(chatId) {
+    const state = this.ensureChatState(chatId);
+    return state.currentWorkdir || this.config.runner.cwd;
+  }
+
+  getRelativeWorkdir(chatId) {
+    const workdir = this.getWorkdir(chatId);
+    const relative = path.relative(this.config.workspace.root, workdir);
+    return relative || ".";
+  }
+
+  isInsideWorkspaceRoot(candidate) {
+    const root = path.resolve(this.config.workspace.root);
+    const target = path.resolve(candidate);
+    const relative = path.relative(root, target);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  }
+
+  listProjects() {
+    const root = this.config.workspace.root;
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    const projects = [];
+
+    if (fs.existsSync(path.join(root, ".git"))) {
+      projects.push({
+        name: path.basename(root),
+        path: root,
+        relativePath: "."
+      });
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith(".")) continue;
+
+      const fullPath = path.join(root, entry.name);
+      if (!fs.existsSync(path.join(fullPath, ".git"))) continue;
+
+      projects.push({
+        name: entry.name,
+        path: fullPath,
+        relativePath: entry.name
+      });
+    }
+
+    return projects.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  switchWorkdir(chatId, targetName) {
+    const key = String(chatId);
+    const requested = String(targetName || "").trim();
+    if (!requested) {
+      throw new Error("Project name is required.");
+    }
+
+    const root = this.config.workspace.root;
+    let targetPath;
+
+    if (requested === "." || requested === path.basename(root)) {
+      targetPath = root;
+    } else {
+      targetPath = path.resolve(root, requested);
+    }
+
+    if (!this.isInsideWorkspaceRoot(targetPath)) {
+      throw new Error("Target path is outside WORKSPACE_ROOT.");
+    }
+
+    if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
+      throw new Error(`Project directory does not exist: ${targetPath}`);
+    }
+
+    if (!fs.existsSync(path.join(targetPath, ".git"))) {
+      throw new Error(`Target is not a git repository: ${targetPath}`);
+    }
+
+    const state = this.ensureChatState(key);
+    state.currentWorkdir = targetPath;
+    this.closeSession(key);
+
+    return {
+      workdir: targetPath,
+      relativePath: path.relative(root, targetPath) || "."
+    };
   }
 
   getExecArgs(chatId, prompt, options = {}) {
@@ -130,7 +219,7 @@ export class PtyManager {
       name: "xterm-256color",
       cols: 120,
       rows: 32,
-      cwd: this.config.runner.cwd,
+      cwd: this.getWorkdir(chatId),
       env: {
         ...process.env,
         FORCE_COLOR: "1"
@@ -158,7 +247,7 @@ export class PtyManager {
   startExecSessionWithOptions(chatId, prompt, options = {}) {
     const session = this.createBaseSession(chatId, "exec");
     const proc = spawn(this.config.runner.command, this.getExecArgs(chatId, prompt, options), {
-      cwd: this.config.runner.cwd,
+      cwd: this.getWorkdir(chatId),
       env: process.env
     });
 
@@ -369,7 +458,9 @@ export class PtyManager {
       lastExitSignal: state.lastExitSignal,
       preferredModel: state.preferredModel,
       ptySupported: state.ptySupported,
-      workdir: this.config.runner.cwd,
+      workdir: this.getWorkdir(key),
+      relativeWorkdir: this.getRelativeWorkdir(key),
+      workspaceRoot: this.config.workspace.root,
       command: this.config.runner.command,
       mcpServers: this.config.mcp.servers.map((server) => server.name)
     };

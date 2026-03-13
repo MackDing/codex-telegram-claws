@@ -45,7 +45,7 @@ export function registerHandlers({ bot, router, ptyManager, skills, scheduler })
         "codex-telegram-claws ready.",
         "普通消息和编码任务会路由到 Codex。",
         "MCP 只在显式 /mcp 命令下调用。",
-        "试试: /status, /exec, /auto, /plan, /model, /new",
+        "试试: /status, /repo, /pwd, /exec, /auto, /plan, /model, /new",
         "GitHub 指令示例: /gh commit \"feat: init\""
       ].join("\n")
     );
@@ -58,6 +58,9 @@ export function registerHandlers({ bot, router, ptyManager, skills, scheduler })
         "Commands:",
         "/help - 显示帮助",
         "/status - 查看当前 chat 的运行状态",
+        "/pwd - 查看当前项目目录",
+        "/repo - 列出可切换项目",
+        "/repo <name> - 切换当前 chat 的项目",
         "/new - 新建会话并清空当前上下文",
         "/exec <task> - 强制用 codex exec 运行一次任务",
         "/auto <task> - 强制用 codex exec --full-auto 运行任务",
@@ -87,10 +90,61 @@ export function registerHandlers({ bot, router, ptyManager, skills, scheduler })
         }`,
         `preferred model: ${status.preferredModel || "inherit codex default"}`,
         `command: ${status.command}`,
+        `workspace root: ${status.workspaceRoot}`,
         `workdir: ${status.workdir}`,
         `mcp servers: ${status.mcpServers.length ? status.mcpServers.join(", ") : "none"}`
       ].join("\n")
     );
+  });
+
+  bot.command("pwd", async (ctx) => {
+    const status = ptyManager.getStatus(ctx.chat.id);
+    await sendChunkedMarkdown(
+      ctx,
+      [
+        `workspace root: ${status.workspaceRoot}`,
+        `current project: ${status.relativeWorkdir}`,
+        `workdir: ${status.workdir}`
+      ].join("\n")
+    );
+  });
+
+  bot.command("repo", async (ctx) => {
+    const payload = extractCommandPayload(ctx.message.text, "repo");
+    if (!payload) {
+      const status = ptyManager.getStatus(ctx.chat.id);
+      const projects = ptyManager.listProjects();
+      const lines = projects.map((project) => {
+        const marker = project.path === status.workdir ? " <current>" : "";
+        return `- ${project.relativePath}${marker}`;
+      });
+
+      await sendChunkedMarkdown(
+        ctx,
+        [
+          `workspace root: ${status.workspaceRoot}`,
+          "Available projects:",
+          ...(lines.length ? lines : ["- (no git repos found under workspace root)"]),
+          "",
+          "Usage: /repo <name>"
+        ].join("\n")
+      );
+      return;
+    }
+
+    try {
+      const result = ptyManager.switchWorkdir(ctx.chat.id, payload);
+      await sendChunkedMarkdown(
+        ctx,
+        [
+          "Project switched.",
+          `current project: ${result.relativePath}`,
+          `workdir: ${result.workdir}`
+        ].join("\n")
+      );
+    } catch (error) {
+      await sendChunkedMarkdown(ctx, `切换项目失败: ${error.message}`);
+    }
   });
 
   bot.command("new", async (ctx) => {
@@ -219,7 +273,11 @@ export function registerHandlers({ bot, router, ptyManager, skills, scheduler })
   bot.command("gh", async (ctx) => {
     try {
       const text = extractCommandPayload(ctx.message.text, "gh") || "help";
-      const result = await skills.github.execute({ text: `/gh ${text}`, ctx });
+      const result = await skills.github.execute({
+        text: `/gh ${text}`,
+        ctx,
+        workdir: ptyManager.getStatus(ctx.chat.id).workdir
+      });
       await sendSkillResult(ctx, result);
     } catch (error) {
       await sendChunkedMarkdown(ctx, `GitHub skill 执行失败: ${error.message}`);
