@@ -89,6 +89,7 @@ export function registerHandlers({
         "/plan <task> - 仅生成执行计划，不直接修改代码",
         "/model [name|reset] - 查看或设置当前 chat 的模型",
         "/skill list - 查看当前 chat 的 skill 开关",
+        "/skill status - 同 /skill list",
         "/skill on <name> - 启用 skill",
         "/skill off <name> - 禁用 skill",
         "/sh <command> - 运行受限 Linux 命令 (默认关闭)",
@@ -244,7 +245,7 @@ export function registerHandlers({
 
   bot.command("skill", async (ctx) => {
     const payload = extractCommandPayload(ctx.message.text, "skill");
-    if (!payload || /^list$/i.test(payload)) {
+    if (!payload || /^(list|status)$/i.test(payload)) {
       await sendChunkedMarkdown(
         ctx,
         [
@@ -525,7 +526,18 @@ export function registerHandlers({
 
   bot.on("text", async (ctx) => {
     const text = ctx.message.text?.trim() || "";
-    if (!text || text.startsWith("/")) return;
+    if (!text) return;
+    if (/^\/\s+\S+/.test(text)) {
+      await sendChunkedMarkdown(
+        ctx,
+        [
+          "命令格式错误：`/` 后面不要加空格。",
+          `try: ${text.replace(/^\/\s+/, "/")}`
+        ].join("\n")
+      );
+      return;
+    }
+    if (text.startsWith("/")) return;
 
     try {
       const route = await router.routeMessage(text, {

@@ -1,3 +1,5 @@
+import { suggestClosestWord } from "../../bot/commandUtils.js";
+
 export class McpSkill {
   constructor({ mcpClient }) {
     this.mcpClient = mcpClient;
@@ -27,6 +29,7 @@ export class McpSkill {
 
   async handleCommand(rawText) {
     const stripped = rawText.replace(/^\/mcp(@\w+)?\s*/i, "").trim();
+    const supportedSubcommands = ["list", "status", "reconnect", "enable", "disable", "tools", "call"];
     if (!stripped) {
       return {
         text: [
@@ -168,6 +171,11 @@ export class McpSkill {
       };
     }
 
-    return { text: "未知 MCP 子命令。支持: tools, call。" };
+    const suggested = suggestClosestWord(subcommand, supportedSubcommands);
+    return {
+      text: suggested
+        ? `未知 MCP 子命令: ${subcommand}。你是不是想输入 \`/mcp ${suggested}\`?`
+        : `未知 MCP 子命令: ${subcommand}。支持: ${supportedSubcommands.join(", ")}。`
+    };
   }
 }

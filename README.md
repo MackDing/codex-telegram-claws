@@ -132,6 +132,7 @@ General:
 - `/plan <task>` - ask Codex for a plan only, without direct file modification intent
 - `/model [name|reset]` - show or set the model override for the current chat
 - `/skill list` - show skill switches for the current chat
+- `/skill status` - alias of `/skill list`
 - `/skill on <name>` - enable a skill for the current chat
 - `/skill off <name>` - disable a skill for the current chat
 - `/sh <command>` - run a safe allowlisted Linux command in the current project (disabled by default)
