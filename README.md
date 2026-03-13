@@ -118,6 +118,8 @@ Core modules:
 - `src/runner/ptyManager.js`: Codex PTY process + streaming
 - `src/cron/scheduler.js`: proactive scheduled push
 
+Enterprise target architecture: [docs/enterprise-architecture.md](/Users/ding/Documents/Code/Github/codex-telegram-claws/docs/enterprise-architecture.md)
+
 ## Routing and MCP Boundary
 
 To avoid duplicated context fetch:
