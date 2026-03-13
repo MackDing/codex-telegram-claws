@@ -6,6 +6,7 @@ import pty from "node-pty";
 import throttle from "lodash.throttle";
 import stripAnsi from "strip-ansi";
 import { formatPtyOutput, splitTelegramMessage } from "../bot/formatter.js";
+import { normalizeLanguage, t } from "../bot/i18n.js";
 
 function isMessageNotModified(error) {
   return String(error?.description || error?.message || "").includes("message is not modified");
@@ -36,6 +37,7 @@ export class PtyManager {
 
     const state = {
       preferredModel: null,
+      language: "en",
       verboseOutput: false,
       currentWorkdir: this.config.runner.cwd,
       recentWorkdirs: [this.config.runner.cwd],
@@ -87,6 +89,23 @@ export class PtyManager {
   isVerbose(chatId) {
     const state = this.ensureChatState(chatId);
     return Boolean(state.verboseOutput);
+  }
+
+  getLanguage(chatId) {
+    const state = this.ensureChatState(chatId);
+    return normalizeLanguage(state.language) || "en";
+  }
+
+  setLanguage(chatId, language) {
+    const normalized = normalizeLanguage(language);
+    if (!normalized) {
+      throw new Error("Unsupported language.");
+    }
+
+    const state = this.ensureChatState(chatId);
+    state.language = normalized;
+    this.onChange?.(this.exportState());
+    return normalized;
   }
 
   setVerbose(chatId, enabled) {
@@ -167,7 +186,7 @@ export class PtyManager {
     const key = String(chatId);
     const requested = String(targetName || "").trim();
     if (!requested) {
-      throw new Error("Project name is required.");
+      throw new Error(t(this.getLanguage(key), "projectNameRequired"));
     }
 
     const root = this.config.workspace.root;
@@ -180,15 +199,15 @@ export class PtyManager {
     }
 
     if (!this.isInsideWorkspaceRoot(targetPath)) {
-      throw new Error("Target path is outside WORKSPACE_ROOT.");
+      throw new Error(t(this.getLanguage(key), "targetOutsideWorkspaceRoot"));
     }
 
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
-      throw new Error(`Project directory does not exist: ${targetPath}`);
+      throw new Error(t(this.getLanguage(key), "projectDirDoesNotExist", { path: targetPath }));
     }
 
     if (!fs.existsSync(path.join(targetPath, ".git"))) {
-      throw new Error(`Target is not a git repository: ${targetPath}`);
+      throw new Error(t(this.getLanguage(key), "targetNotGitRepository", { path: targetPath }));
     }
 
     const state = this.ensureChatState(key);
@@ -210,7 +229,7 @@ export class PtyManager {
     const previous = (state.recentWorkdirs || []).find((workdir) => workdir !== state.currentWorkdir);
 
     if (!previous) {
-      throw new Error("当前 chat 没有可回退的上一个项目。");
+      throw new Error(t(this.getLanguage(key), "noPreviousProject"));
     }
 
     return this.switchWorkdir(key, previous);
@@ -322,7 +341,11 @@ export class PtyManager {
         await this.bot.telegram
           .sendMessage(
             session.chatId,
-            `Codex session exited (mode=${session.mode}, code=${exitCode}, signal=${signal}).`
+            t(this.getLanguage(session.chatId), "codexSessionExited", {
+              mode: session.mode,
+              exitCode,
+              signal
+            })
           )
           .catch(() => {});
       }
@@ -383,7 +406,12 @@ export class PtyManager {
 
     proc.on("error", async (error) => {
       await this.bot.telegram
-        .sendMessage(session.chatId, `Codex exec failed: ${error.message}`)
+        .sendMessage(
+          session.chatId,
+          t(this.getLanguage(session.chatId), "codexExecFailed", {
+            error: error.message
+          })
+        )
         .catch(() => {});
       session.throttledFlush?.cancel();
       this.sessions.delete(session.chatId);
@@ -546,8 +574,8 @@ export class PtyManager {
         await this.bot.telegram.sendMessage(
           chatId,
           projectState.lastSessionId
-            ? "PTY unavailable on this host. Restoring the current project's Codex conversation in `codex exec resume` mode."
-            : "PTY unavailable on this host. Falling back to `codex exec` mode for this request."
+            ? t(this.getLanguage(chatId), "execFallbackResume")
+            : t(this.getLanguage(chatId), "execFallbackSingle")
         );
       }
       return {
@@ -562,8 +590,13 @@ export class PtyManager {
       const sent = await this.bot.telegram.sendMessage(
         chatId,
         projectState.lastSessionId
-          ? `Codex session restored for project ${this.getRelativeWorkdir(chatId)} (${session.mode}). Streaming output...`
-          : `Codex session started (${session.mode}). Streaming output...`
+          ? t(this.getLanguage(chatId), "sessionRestored", {
+              project: this.getRelativeWorkdir(chatId),
+              mode: session.mode
+            })
+          : t(this.getLanguage(chatId), "sessionStarted", {
+              mode: session.mode
+            })
       );
       session.streamMessageIds.push(sent.message_id);
     }
@@ -664,6 +697,7 @@ export class PtyManager {
 
       chats[chatId] = {
         preferredModel: state.preferredModel,
+        language: this.getLanguage(chatId),
         verboseOutput: Boolean(state.verboseOutput),
         currentWorkdir: this.serializeWorkdir(state.currentWorkdir),
         recentWorkdirs: (state.recentWorkdirs || []).map((workdir) => this.serializeWorkdir(workdir)),
@@ -722,6 +756,7 @@ export class PtyManager {
 
       this.chatState.set(String(chatId), {
         preferredModel: rawState?.preferredModel?.trim?.() || null,
+        language: normalizeLanguage(rawState?.language) || "en",
         verboseOutput: Boolean(rawState?.verboseOutput),
         currentWorkdir,
         recentWorkdirs: [currentWorkdir, ...recentWorkdirs.filter((workdir) => workdir !== currentWorkdir)].slice(0, 6),
@@ -745,6 +780,7 @@ export class PtyManager {
       lastExitSignal: projectState.lastExitSignal,
       projectSessionId: projectState.lastSessionId || null,
       preferredModel: state.preferredModel,
+      language: this.getLanguage(key),
       verboseOutput: Boolean(state.verboseOutput),
       ptySupported: state.ptySupported,
       workdir: this.getWorkdir(key),

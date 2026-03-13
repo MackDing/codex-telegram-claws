@@ -3,6 +3,7 @@ import process from "node:process";
 import simpleGit from "simple-git";
 import { Octokit } from "@octokit/rest";
 import { parseCommandLine } from "../../runner/commandLine.js";
+import { t } from "../../bot/i18n.js";
 
 function buildAutoCommitMessage(status) {
   const fileCount = status.files.length;
@@ -59,53 +60,46 @@ export class GitHubSkill {
     );
   }
 
-  async execute({ text, workdir }) {
+  async execute({ text, workdir, locale = "en" }) {
     const stripped = text.replace(/^\/gh(@\w+)?\s*/i, "").trim();
     const normalized = stripped.toLowerCase();
 
     if (!stripped || normalized === "help") {
-      return { text: this.helpText() };
+      return { text: this.helpText(locale) };
     }
 
     if (/创建仓库|create repo|new repo/.test(normalized)) {
-      return this.createRepoFromText(stripped, workdir);
+      return this.createRepoFromText(stripped, workdir, locale);
     }
 
     if (/测试状态|test status|status/.test(normalized)) {
-      return this.readTestStatusFromText(stripped);
+      return this.readTestStatusFromText(stripped, locale);
     }
 
     if (/运行测试|run test|playwright|e2e/.test(normalized)) {
-      return this.startTests(workdir);
+      return this.startTests(workdir, locale);
     }
 
     if ((/推送|\bpush\b/.test(normalized) && !/提交|commit/.test(normalized))) {
-      return this.pushOnly(workdir);
+      return this.pushOnly(workdir, locale);
     }
 
     if (/提交|推送|commit|push/.test(normalized)) {
-      return this.commitAndPush(stripped, workdir);
+      return this.commitAndPush(stripped, workdir, locale);
     }
 
-    return { text: this.helpText() };
+    return { text: this.helpText(locale) };
   }
 
-  helpText() {
-    return [
-      "GitHub Skill commands:",
-      "/gh commit \"feat: your message\"",
-      "/gh push",
-      "/gh create repo my-new-repo",
-      "/gh run tests",
-      "/gh test status <jobId>"
-    ].join("\n");
+  helpText(locale = "en") {
+    return t(locale, "githubHelp");
   }
 
-  async commitAndPush(rawText, workdir) {
+  async commitAndPush(rawText, workdir, locale = "en") {
     const git = this.getGit(workdir);
     const status = await git.status();
     if (!status.files.length) {
-      return { text: "没有检测到变更，跳过 commit。" };
+      return { text: t(locale, "githubNoChanges") };
     }
 
     const explicitMessage = extractQuotedMessage(rawText);
@@ -120,44 +114,45 @@ export class GitHubSkill {
     try {
       await git.push("origin", branch);
       return {
-        text: [
-          "提交并推送成功。",
-          `workdir: ${workdir || this.config.github.defaultWorkdir}`,
-          `branch: ${branch}`,
-          `message: ${commitMessage}`
-        ].join("\n")
+        text: t(locale, "githubCommitAndPushSucceeded", {
+          workdir: workdir || this.config.github.defaultWorkdir,
+          branch,
+          message: commitMessage
+        })
       };
     } catch (error) {
       return {
-        text: [
-          "提交完成，但推送失败。",
-          `workdir: ${workdir || this.config.github.defaultWorkdir}`,
-          `branch: ${branch}`,
-          `message: ${commitMessage}`,
-          `error: ${error.message}`
-        ].join("\n")
+        text: t(locale, "githubCommitSucceededPushFailed", {
+          workdir: workdir || this.config.github.defaultWorkdir,
+          branch,
+          message: commitMessage,
+          error: error.message
+        })
       };
     }
   }
 
-  async pushOnly(workdir) {
+  async pushOnly(workdir, locale = "en") {
     const git = this.getGit(workdir);
     const branchInfo = await git.branch();
     const branch = branchInfo.current || this.config.github.defaultBranch;
     await git.push("origin", branch);
     return {
-      text: `推送成功。\nworkdir: ${workdir || this.config.github.defaultWorkdir}\nbranch: ${branch}`
+      text: t(locale, "githubPushSucceeded", {
+        workdir: workdir || this.config.github.defaultWorkdir,
+        branch
+      })
     };
   }
 
-  async createRepoFromText(rawText, workdir) {
+  async createRepoFromText(rawText, workdir, locale = "en") {
     if (!this.octokit) {
-      return { text: "缺少 GITHUB_TOKEN，无法调用 GitHub API 创建仓库。" };
+      return { text: t(locale, "githubMissingToken") };
     }
 
     const repoName = extractRepoName(rawText);
     if (!repoName) {
-      return { text: "无法解析仓库名。示例: /gh create repo codex-telegram-claws-demo" };
+      return { text: t(locale, "githubRepoNameParseFailed") };
     }
 
     const git = this.getGit(workdir);
@@ -182,22 +177,21 @@ export class GitHubSkill {
     await git.push(["-u", "origin", branch]);
 
     return {
-      text: [
-        "仓库创建并关联成功。",
-        `workdir: ${workdir || this.config.github.defaultWorkdir}`,
-        `repo: ${repo.full_name}`,
-        `url: ${repo.html_url}`,
-        `branch: ${branch}`
-      ].join("\n")
+      text: t(locale, "githubRepoCreated", {
+        workdir: workdir || this.config.github.defaultWorkdir,
+        repo: repo.full_name,
+        url: repo.html_url,
+        branch
+      })
     };
   }
 
-  async startTests(workdir) {
+  async startTests(workdir, locale = "en") {
     const jobId = `job-${Date.now()}`;
     const command = this.config.github.e2eCommand;
     const argv = parseCommandLine(command);
     if (!argv.length) {
-      return { text: "E2E_TEST_COMMAND 为空，无法启动测试。" };
+      return { text: t(locale, "githubEmptyTestCommand") };
     }
 
     const [binary, ...args] = argv;
@@ -243,46 +237,34 @@ export class GitHubSkill {
     this.latestTestJobId = jobId;
 
     return {
-      text: [
-        "已触发自动化测试任务。",
-        `jobId: ${jobId}`,
-        `workdir: ${job.workdir}`,
-        `command: ${command}`,
-        "使用 /gh test status <jobId> 查询状态。"
-      ].join("\n"),
+      text: t(locale, "githubTestsStarted", {
+        jobId,
+        workdir: job.workdir,
+        command
+      }),
       testJobId: jobId
     };
   }
 
-  async readTestStatusFromText(text) {
+  async readTestStatusFromText(text, locale = "en") {
     const targetJobId = pickJobId(text, this.latestTestJobId);
     if (!targetJobId) {
-      return { text: "没有可查询的测试任务。先执行 /gh run tests。" };
+      return { text: t(locale, "githubNoTestJobs") };
     }
 
     const job = this.testJobs.get(targetJobId);
     if (!job) {
-      return { text: `找不到测试任务: ${targetJobId}` };
+      return { text: t(locale, "githubTestJobNotFound", { jobId: targetJobId }) };
     }
 
     return {
-      text: [
-        `jobId: ${job.jobId}`,
-        `status: ${job.status}`,
-        `workdir: ${job.workdir}`,
-        `startedAt: ${job.startedAt}`,
-        job.finishedAt ? `finishedAt: ${job.finishedAt}` : "finishedAt: running",
-        job.exitCode === null ? "exitCode: running" : `exitCode: ${job.exitCode}`,
-        "",
-        "output tail:",
-        job.output || "(no output yet)"
-      ].join("\n"),
+      text: t(locale, "githubTestStatus", { job }),
       testJobId: job.jobId
     };
   }
 
-  async getTestStatus(jobId = this.latestTestJobId) {
+  async getTestStatus(jobId = this.latestTestJobId, locale = "en") {
     if (!jobId) return null;
-    return this.readTestStatusFromText(`test status ${jobId}`);
+    return this.readTestStatusFromText(`test status ${jobId}`, locale);
   }
 }

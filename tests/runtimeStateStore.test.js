@@ -23,6 +23,7 @@ test("runtime state store saves and loads MCP and skill state", async () => {
     runner: {
       chats: {
         "42": {
+          language: "zh-HK",
           verboseOutput: true,
           currentWorkdir: "project-a",
           recentWorkdirs: ["project-a", "project-b"],
@@ -51,6 +52,7 @@ test("runtime state store saves and loads MCP and skill state", async () => {
   assert.deepEqual(state.runner, {
     chats: {
       "42": {
+        language: "zh-HK",
         verboseOutput: true,
         currentWorkdir: "project-a",
         recentWorkdirs: ["project-a", "project-b"],

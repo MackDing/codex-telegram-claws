@@ -4,6 +4,7 @@ import {
   extractCommandPayload,
   suggestClosestWord
 } from "./commandUtils.js";
+import { normalizeLanguage, SUPPORTED_LANGUAGES, t } from "./i18n.js";
 import { escapeMarkdownV2, splitTelegramMessage } from "./formatter.js";
 
 async function sendChunkedMarkdown(ctx, text, extra = {}) {
@@ -19,9 +20,9 @@ async function sendChunkedMarkdown(ctx, text, extra = {}) {
   }
 }
 
-async function sendSkillResult(ctx, result) {
+async function sendSkillResult(ctx, result, locale = "en") {
   const payload = typeof result === "string" ? { text: result } : result;
-  const text = payload?.text || "(empty response)";
+  const text = payload?.text || t(locale, "emptyResponse");
   const markdown = escapeMarkdownV2(text);
   const chunks = splitTelegramMessage(markdown, 3900);
 
@@ -29,7 +30,10 @@ async function sendSkillResult(ctx, result) {
     const maybeMarkup =
       i === chunks.length - 1 && payload.testJobId
         ? Markup.inlineKeyboard([
-            Markup.button.callback("刷新测试状态", `gh:test_status:${payload.testJobId}`)
+            Markup.button.callback(
+              t(locale, "buttonRefreshTestStatus"),
+              `gh:test_status:${payload.testJobId}`
+            )
           ])
         : undefined;
 
@@ -77,88 +81,41 @@ export function registerHandlers({
   scheduler,
   adminActions
 }) {
+  const localeOf = (chatId) => ptyManager.getLanguage(chatId);
+
   bot.start(async (ctx) => {
-    await sendChunkedMarkdown(
-      ctx,
-      [
-        "codex-telegram-claws ready.",
-        "普通消息和编码任务会路由到 Codex。",
-        "MCP 只在显式 /mcp 命令下调用。",
-        "试试: /status, /repo, /pwd, /exec, /auto, /plan, /model, /skill, /new, /sh",
-        "GitHub 指令示例: /gh commit \"feat: init\""
-      ].join("\n")
-    );
+    await sendChunkedMarkdown(ctx, t(localeOf(ctx.chat.id), "startLines").join("\n"));
   });
 
   bot.command("help", async (ctx) => {
-    await sendChunkedMarkdown(
-      ctx,
-      [
-        "Commands:",
-        "/help - 显示帮助",
-        "/status - 查看当前 chat 的运行状态",
-        "/pwd - 查看当前项目目录",
-        "/repo - 列出可切换项目",
-        "/repo <name> - 切换当前 chat 的项目",
-        "/repo <keyword> - 关键词匹配项目并切换/列出候选",
-        "/repo recent - 查看最近使用过的项目",
-        "/repo - - 切回上一个项目",
-        "/new - 新建会话并清空当前上下文",
-        "/exec <task> - 强制用 codex exec 运行一次任务",
-        "/auto <task> - 强制用 codex exec --full-auto 运行任务",
-        "/plan <task> - 仅生成执行计划，不直接修改代码",
-        "/model [name|reset] - 查看或设置当前 chat 的模型",
-        "/verbose [on|off] - 查看或切换系统提示输出",
-        "/skill list - 查看当前 chat 的 skill 开关",
-        "/skill status - 同 /skill list",
-        "/skill on <name> - 启用 skill",
-        "/skill off <name> - 禁用 skill",
-        "/sh <command> - 运行受限 Linux 命令 (默认关闭)",
-        "/sh --confirm <command> - 确认执行高风险命令",
-        "/restart - 重启 bot 进程",
-        "/interrupt - 向 Codex CLI 发送 Ctrl+C",
-        "/stop - 终止当前 chat 的 PTY 会话",
-        "/cron_now - 立即触发一次日报推送",
-        "/gh ... - GitHub skill",
-        "/mcp ... - MCP skill 管理与显式调用"
-      ].join("\n")
-    );
+    await sendChunkedMarkdown(ctx, t(localeOf(ctx.chat.id), "helpLines").join("\n"));
   });
 
   bot.command("status", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const status = ptyManager.getStatus(ctx.chat.id);
     const skillStates = skillRegistry.list(ctx.chat.id);
     const mcpServers = skills.mcp.mcpClient.listServers();
+    const shellSummary = shellManager.isEnabled()
+      ? `enabled, ${shellManager.isReadOnly() ? "read-only" : "writable"} (${shellManager.getAllowedCommands().length} prefixes)`
+      : "disabled";
+    const skillsSummary =
+      skillStates.map((skill) => `${skill.name}:${skill.enabled ? "on" : "off"}`).join(", ") || "none";
+    const mcpSummary = mcpServers.length
+      ? mcpServers
+          .map((server) => `${server.name}:${server.enabled ? "on" : "off"}/${server.connected ? "up" : "down"}`)
+          .join(", ")
+      : "none";
     await sendChunkedMarkdown(
       ctx,
-      [
-        "Status:",
-        `active: ${status.active ? "yes" : "no"}`,
-        `active mode: ${status.activeMode || "idle"}`,
-        `last mode: ${status.lastMode || "none"}`,
-        `last exit: ${status.lastExitCode === null ? "n/a" : status.lastExitCode}`,
-        `pty supported: ${
-          status.ptySupported === null ? "unknown" : status.ptySupported ? "yes" : "no (exec fallback)"
-        }`,
-        `preferred model: ${status.preferredModel || "inherit codex default"}`,
-        `verbose: ${status.verboseOutput ? "on" : "off"}`,
-        `command: ${status.command}`,
-        `workspace root: ${status.workspaceRoot}`,
-        `workdir: ${status.workdir}`,
-        `recent projects: ${ptyManager.getRecentProjects(ctx.chat.id).map((item) => item.relativePath).join(", ") || "."}`,
-        `project context: ${status.projectSessionId ? `resumable (${status.projectSessionId})` : "fresh"}`,
-        `safe shell: ${
-          shellManager.isEnabled()
-            ? `enabled, ${shellManager.isReadOnly() ? "read-only" : "writable"} (${shellManager.getAllowedCommands().length} prefixes)`
-            : "disabled"
-        }`,
-        `skills: ${skillStates.map((skill) => `${skill.name}:${skill.enabled ? "on" : "off"}`).join(", ") || "none"}`,
-        `mcp servers: ${
-          mcpServers.length
-            ? mcpServers.map((server) => `${server.name}:${server.enabled ? "on" : "off"}/${server.connected ? "up" : "down"}`).join(", ")
-            : "none"
-        }`
-      ].join("\n")
+      t(locale, "statusLines", {
+        status,
+        recentProjects:
+          ptyManager.getRecentProjects(ctx.chat.id).map((item) => item.relativePath).join(", ") || ".",
+        shellSummary,
+        skillsSummary,
+        mcpSummary
+      }).join("\n")
     );
   });
 
@@ -166,16 +123,15 @@ export function registerHandlers({
     const status = ptyManager.getStatus(ctx.chat.id);
     await sendChunkedMarkdown(
       ctx,
-      [
-        `workspace root: ${status.workspaceRoot}`,
-        `current project: ${status.relativeWorkdir}`,
-        `workdir: ${status.workdir}`,
-        `recent: ${ptyManager.getRecentProjects(ctx.chat.id).map((item) => item.relativePath).join(", ") || "."}`
-      ].join("\n")
+      t(localeOf(ctx.chat.id), "pwdLines", {
+        status,
+        recent: ptyManager.getRecentProjects(ctx.chat.id).map((item) => item.relativePath).join(", ") || "."
+      }).join("\n")
     );
   });
 
   bot.command("repo", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const payload = extractCommandPayload(ctx.message.text, "repo");
     const status = ptyManager.getStatus(ctx.chat.id);
 
@@ -187,16 +143,11 @@ export function registerHandlers({
 
       await sendChunkedMarkdown(
         ctx,
-        [
-          `workspace root: ${status.workspaceRoot}`,
-          "Available projects:",
-          ...(lines.length ? lines : ["- (no git repos found under workspace root)"]),
-          "",
-          "Recent projects:",
-          ...(recentLines.length ? recentLines : ["- ."]),
-          "",
-          "Usage: /repo <name> | /repo recent | /repo -"
-        ].join("\n")
+        t(locale, "repoList", {
+          workspaceRoot: status.workspaceRoot,
+          projectLines: lines,
+          recentLines
+        })
       );
       return;
     }
@@ -205,12 +156,9 @@ export function registerHandlers({
       const recent = ptyManager.getRecentProjects(ctx.chat.id).map((project) => `- ${project.relativePath}`);
       await sendChunkedMarkdown(
         ctx,
-        [
-          "Recent projects:",
-          ...(recent.length ? recent : ["- ."]),
-          "",
-          "Use /repo <name> to switch."
-        ].join("\n")
+        t(locale, "repoRecent", {
+          recentLines: recent
+        })
       );
       return;
     }
@@ -232,23 +180,19 @@ export function registerHandlers({
           if (!matches.length) {
             const suggestion = suggestProjectName(payload, projects);
             if (suggestion) {
-              throw new Error(
-                `没有匹配的项目: ${payload}\n你是不是想找: ${suggestion}\ntry: /repo ${suggestion}`
-              );
+              throw new Error(t(locale, "repoSuggestion", { value: payload, suggestion }));
             }
 
-            throw new Error(`没有匹配的项目: ${payload}`);
+            throw new Error(t(locale, "repoNoMatch", { value: payload }));
           }
 
           if (matches.length > 1) {
             await sendChunkedMarkdown(
               ctx,
-              [
-                `找到多个匹配项目: ${payload}`,
-                ...formatProjectLines(matches, status.workdir),
-                "",
-                "请使用更精确的名称。"
-              ].join("\n")
+              t(locale, "repoMultipleMatches", {
+                value: payload,
+                projectLines: formatProjectLines(matches, status.workdir)
+              })
             );
             return;
           }
@@ -263,35 +207,32 @@ export function registerHandlers({
           : ptyManager.switchWorkdir(ctx.chat.id, target);
       await sendChunkedMarkdown(
         ctx,
-        [
-          "Project switched.",
-          `current project: ${result.relativePath}`,
-          `workdir: ${result.workdir}`
-        ].join("\n")
+        t(locale, "repoSwitched", {
+          relativePath: result.relativePath,
+          workdir: result.workdir
+        })
       );
     } catch (error) {
-      await sendChunkedMarkdown(ctx, `切换项目失败: ${error.message}`);
+      await sendChunkedMarkdown(ctx, t(locale, "repoSwitchFailed", { error: error.message }));
     }
   });
 
   bot.command("skill", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const payload = extractCommandPayload(ctx.message.text, "skill");
     if (!payload || /^(list|status)$/i.test(payload)) {
       await sendChunkedMarkdown(
         ctx,
-        [
-          "Skills:",
-          ...formatSkillLines(skillRegistry.list(ctx.chat.id)),
-          "",
-          "Usage: /skill list | /skill on <name> | /skill off <name>"
-        ].join("\n")
+        t(locale, "skillList", {
+          skillLines: formatSkillLines(skillRegistry.list(ctx.chat.id))
+        })
       );
       return;
     }
 
     const [action, rawName] = payload.split(/\s+/, 2);
     if (!/^(on|off)$/i.test(action) || !rawName) {
-      await sendChunkedMarkdown(ctx, "用法: /skill list | /skill on <name> | /skill off <name>");
+      await sendChunkedMarkdown(ctx, t(locale, "skillUsage"));
       return;
     }
 
@@ -302,86 +243,81 @@ export function registerHandlers({
       if (/^on$/i.test(action)) {
         await sendChunkedMarkdown(
           ctx,
-          [
-            actionResult.changed
-              ? `skill ${rawName} 已启用。`
-              : `skill ${rawName} 已处于启用状态。`,
-            ...formatSkillLines(actionResult.skills)
-          ].join("\n")
+          t(locale, "skillStateChanged", {
+            name: rawName,
+            enabled: true,
+            changed: actionResult.changed,
+            skillLines: formatSkillLines(actionResult.skills)
+          })
         );
         return;
       }
 
       await sendChunkedMarkdown(
         ctx,
-        [
-          actionResult.changed
-            ? `skill ${rawName} 已禁用。`
-            : `skill ${rawName} 已处于禁用状态。`,
-          ...formatSkillLines(actionResult.skills)
-        ].join("\n")
+        t(locale, "skillStateChanged", {
+          name: rawName,
+          enabled: false,
+          changed: actionResult.changed,
+          skillLines: formatSkillLines(actionResult.skills)
+        })
       );
     } catch (error) {
-      await sendChunkedMarkdown(ctx, `Skill 管理失败: ${error.message}`);
+      await sendChunkedMarkdown(ctx, t(locale, "skillManagementFailed", { error: error.message }));
     }
   });
 
   bot.command("new", async (ctx) => {
     const result = ptyManager.resetCurrentProjectConversation(ctx.chat.id);
-    await sendChunkedMarkdown(
-      ctx,
-      result.closed
-        ? "当前项目的会话上下文已清空，并关闭了活动会话。下一条消息会在当前项目启动全新 Codex 会话。"
-        : "当前项目的会话上下文已清空。下一条消息会在当前项目启动全新 Codex 会话。"
-    );
+    await sendChunkedMarkdown(ctx, t(localeOf(ctx.chat.id), "conversationReset", { closed: result.closed }));
   });
 
   bot.command("restart", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     if (!adminActions?.restart) {
-      await sendChunkedMarkdown(ctx, "当前环境未启用 bot 重启控制。");
+      await sendChunkedMarkdown(ctx, t(locale, "restartUnavailable"));
       return;
     }
 
-    await sendChunkedMarkdown(ctx, "正在重启 bot 进程...");
+    await sendChunkedMarkdown(ctx, t(locale, "restarting"));
     await adminActions.restart();
   });
 
   bot.command("exec", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const task = extractCommandPayload(ctx.message.text, "exec");
     if (!task) {
-      await sendChunkedMarkdown(ctx, "用法: /exec <task>");
+      await sendChunkedMarkdown(ctx, t(locale, "usageExec"));
       return;
     }
 
     const result = await ptyManager.sendPrompt(ctx, task, {
       forceExec: true,
-      notice: "Running one-off `codex exec` task..."
+      notice: t(locale, "execNotice")
     });
 
     if (!result.started) {
-      await sendChunkedMarkdown(
-        ctx,
-        `当前已有 ${result.activeMode || "unknown"} 任务在运行。请等待完成或先使用 /interrupt。`
-      );
+      await sendChunkedMarkdown(ctx, t(locale, "taskBusy", { mode: result.activeMode || "unknown" }));
     }
   });
 
   bot.command("sh", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const command = extractCommandPayload(ctx.message.text, "sh");
     if (!command) {
-      await sendChunkedMarkdown(ctx, "用法: /sh <command>");
+      await sendChunkedMarkdown(ctx, t(locale, "usageSh"));
       return;
     }
 
     const status = ptyManager.getStatus(ctx.chat.id);
     if (status.active) {
-      await sendChunkedMarkdown(ctx, "当前有 Codex 任务正在运行。先等待完成，或使用 /interrupt /new。");
+      await sendChunkedMarkdown(ctx, t(locale, "codexBusyForShell"));
       return;
     }
 
     let validation;
     try {
-      validation = shellManager.inspectCommand(command);
+      validation = shellManager.inspectCommand(command, { locale });
     } catch (error) {
       await sendChunkedMarkdown(ctx, error.message);
       return;
@@ -390,171 +326,170 @@ export function registerHandlers({
     if (validation.requiresConfirmation) {
       await sendChunkedMarkdown(
         ctx,
-        [
-          "该命令被标记为高风险，需要二次确认。",
-          `command: ${validation.commandText}`,
-          `confirm with: ${validation.confirmationCommand}`
-        ].join("\n")
+        t(locale, "shellRequiresConfirmation", {
+          command: validation.commandText,
+          confirmationCommand: validation.confirmationCommand
+        })
       );
       return;
     }
 
     await sendChunkedMarkdown(
       ctx,
-      [
-        "Running safe shell command...",
-        `workdir: ${status.workdir}`,
-        `command: ${validation.argv.join(" ")}`
-      ].join("\n")
+      t(locale, "runningSafeShell", {
+        workdir: status.workdir,
+        command: validation.argv.join(" ")
+      })
     );
 
     const result = await shellManager.execute({
       chatId: ctx.chat.id,
       rawCommand: command,
-      workdir: status.workdir
+      workdir: status.workdir,
+      locale
     });
 
     if (!result.started) {
-      await sendChunkedMarkdown(ctx, "当前 chat 已有一个 shell 命令在运行。");
+      await sendChunkedMarkdown(ctx, t(locale, "shellBusy"));
       return;
     }
 
-    await sendChunkedMarkdown(
-      ctx,
-      [
-        `shell status: ${result.status}`,
-        `command: ${result.command}`,
-        `workdir: ${result.workdir}`,
-        `exitCode: ${result.exitCode === null ? "n/a" : result.exitCode}`,
-        `signal: ${result.signal || "none"}`,
-        "",
-        "output:",
-        result.output
-      ].join("\n")
-    );
+    await sendChunkedMarkdown(ctx, t(locale, "shellResult", { result }));
   });
 
   bot.command("auto", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const task = extractCommandPayload(ctx.message.text, "auto");
     if (!task) {
-      await sendChunkedMarkdown(ctx, "用法: /auto <task>");
+      await sendChunkedMarkdown(ctx, t(locale, "usageAuto"));
       return;
     }
 
     const result = await ptyManager.sendPrompt(ctx, task, {
       forceExec: true,
       fullAuto: true,
-      notice: "Running one-off `codex exec --full-auto` task..."
+      notice: t(locale, "autoNotice")
     });
 
     if (!result.started) {
-      await sendChunkedMarkdown(
-        ctx,
-        `当前已有 ${result.activeMode || "unknown"} 任务在运行。请等待完成或先使用 /interrupt。`
-      );
+      await sendChunkedMarkdown(ctx, t(locale, "taskBusy", { mode: result.activeMode || "unknown" }));
     }
   });
 
   bot.command("plan", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const task = extractCommandPayload(ctx.message.text, "plan");
     if (!task) {
-      await sendChunkedMarkdown(ctx, "用法: /plan <task>");
+      await sendChunkedMarkdown(ctx, t(locale, "usagePlan"));
       return;
     }
 
     const result = await ptyManager.sendPrompt(ctx, buildPlanPrompt(task), {
       forceExec: true,
-      notice: "Running planning-only Codex task..."
+      notice: t(locale, "planNotice")
     });
 
     if (!result.started) {
-      await sendChunkedMarkdown(
-        ctx,
-        `当前已有 ${result.activeMode || "unknown"} 任务在运行。请等待完成或先使用 /interrupt。`
-      );
+      await sendChunkedMarkdown(ctx, t(locale, "taskBusy", { mode: result.activeMode || "unknown" }));
     }
   });
 
   bot.command("model", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const value = extractCommandPayload(ctx.message.text, "model");
     if (!value) {
       const status = ptyManager.getStatus(ctx.chat.id);
-      await sendChunkedMarkdown(
-        ctx,
-        `当前模型: ${status.preferredModel || "inherit codex default"}`
-      );
+      await sendChunkedMarkdown(ctx, t(locale, "modelCurrent", { model: status.preferredModel }));
       return;
     }
 
     if (/^(reset|default|inherit)$/i.test(value)) {
       ptyManager.clearPreferredModel(ctx.chat.id);
       const closed = ptyManager.closeSession(ctx.chat.id);
-      await sendChunkedMarkdown(
-        ctx,
-        closed
-          ? "模型已重置为 Codex 默认值，并重建了当前会话。"
-          : "模型已重置为 Codex 默认值。"
-      );
+      await sendChunkedMarkdown(ctx, t(locale, "modelReset", { closed }));
       return;
     }
 
     ptyManager.setPreferredModel(ctx.chat.id, value);
     const closed = ptyManager.closeSession(ctx.chat.id);
-    await sendChunkedMarkdown(
-      ctx,
-      closed
-        ? `模型已设置为 ${value}，并重建了当前会话。`
-        : `模型已设置为 ${value}。`
-    );
+    await sendChunkedMarkdown(ctx, t(locale, "modelSet", { value, closed }));
   });
 
   bot.command("verbose", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const value = extractCommandPayload(ctx.message.text, "verbose");
     if (!value) {
-      await sendChunkedMarkdown(
-        ctx,
-        `当前系统提示输出: ${ptyManager.isVerbose(ctx.chat.id) ? "on" : "off"}`
-      );
+      await sendChunkedMarkdown(ctx, t(locale, "verboseCurrent", { enabled: ptyManager.isVerbose(ctx.chat.id) }));
       return;
     }
 
     if (/^(on|true|1)$/i.test(value)) {
       ptyManager.setVerbose(ctx.chat.id, true);
-      await sendChunkedMarkdown(ctx, "系统提示输出已开启。");
+      await sendChunkedMarkdown(ctx, t(locale, "verboseSet", { enabled: true }));
       return;
     }
 
     if (/^(off|false|0)$/i.test(value)) {
       ptyManager.setVerbose(ctx.chat.id, false);
-      await sendChunkedMarkdown(ctx, "系统提示输出已关闭。");
+      await sendChunkedMarkdown(ctx, t(locale, "verboseSet", { enabled: false }));
       return;
     }
 
-    await sendChunkedMarkdown(ctx, "用法: /verbose [on|off]");
+    await sendChunkedMarkdown(ctx, t(locale, "usageVerbose"));
+  });
+
+  bot.command("language", async (ctx) => {
+    const currentLocale = localeOf(ctx.chat.id);
+    const value = extractCommandPayload(ctx.message.text, "language");
+    if (!value) {
+      await sendChunkedMarkdown(
+        ctx,
+        t(currentLocale, "languageCurrent", {
+          language: currentLocale
+        })
+      );
+      return;
+    }
+
+    const normalized = normalizeLanguage(value);
+    if (!SUPPORTED_LANGUAGES.includes(normalized)) {
+      await sendChunkedMarkdown(ctx, t(currentLocale, "languageInvalid"));
+      return;
+    }
+
+    ptyManager.setLanguage(ctx.chat.id, normalized);
+    await sendChunkedMarkdown(
+      ctx,
+      t(normalized, "languageSet", {
+        language: normalized
+      })
+    );
   });
 
   bot.command("interrupt", async (ctx) => {
     const ok = ptyManager.interrupt(ctx.chat.id);
-    await sendChunkedMarkdown(ctx, ok ? "已发送 Ctrl+C。" : "当前 chat 没有活动 PTY 会话。");
+    await sendChunkedMarkdown(ctx, t(localeOf(ctx.chat.id), "interruptResult", { ok }));
   });
 
   bot.command("stop", async (ctx) => {
     const ok = ptyManager.closeSession(ctx.chat.id);
-    await sendChunkedMarkdown(ctx, ok ? "PTY 会话已终止。" : "当前 chat 没有活动 PTY 会话。");
+    await sendChunkedMarkdown(ctx, t(localeOf(ctx.chat.id), "stopResult", { ok }));
   });
 
   bot.command("cron_now", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     try {
       await scheduler.triggerDailySummaryNow(ctx.from.id);
-      await sendChunkedMarkdown(ctx, "日报已触发并推送。");
+      await sendChunkedMarkdown(ctx, t(locale, "cronTriggered"));
     } catch (error) {
-      await sendChunkedMarkdown(ctx, `触发失败: ${error.message}`);
+      await sendChunkedMarkdown(ctx, t(locale, "triggerFailed", { error: error.message }));
     }
   });
 
   bot.command("gh", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     if (!skillRegistry.isEnabled(ctx.chat.id, "github")) {
-      await sendChunkedMarkdown(ctx, "GitHub skill 当前 chat 已禁用。使用 /skill on github 重新启用。");
+      await sendChunkedMarkdown(ctx, t(locale, "githubDisabled"));
       return;
     }
 
@@ -563,59 +498,62 @@ export function registerHandlers({
       const result = await skills.github.execute({
         text: `/gh ${text}`,
         ctx,
-        workdir: ptyManager.getStatus(ctx.chat.id).workdir
+        workdir: ptyManager.getStatus(ctx.chat.id).workdir,
+        locale
       });
-      await sendSkillResult(ctx, result);
+      await sendSkillResult(ctx, result, locale);
     } catch (error) {
-      await sendChunkedMarkdown(ctx, `GitHub skill 执行失败: ${error.message}`);
+      await sendChunkedMarkdown(ctx, t(locale, "githubFailed", { error: error.message }));
     }
   });
 
   bot.command("mcp", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     if (!skillRegistry.isEnabled(ctx.chat.id, "mcp")) {
-      await sendChunkedMarkdown(ctx, "MCP skill 当前 chat 已禁用。使用 /skill on mcp 重新启用。");
+      await sendChunkedMarkdown(ctx, t(locale, "mcpDisabled"));
       return;
     }
 
     try {
       const text = ctx.message.text.trim();
-      const result = await skills.mcp.execute({ text, ctx });
-      await sendSkillResult(ctx, result);
+      const result = await skills.mcp.execute({ text, ctx, locale });
+      await sendSkillResult(ctx, result, locale);
     } catch (error) {
-      await sendChunkedMarkdown(ctx, `MCP skill 执行失败: ${error.message}`);
+      await sendChunkedMarkdown(ctx, t(locale, "mcpFailed", { error: error.message }));
     }
   });
 
   bot.on("callback_query", async (ctx) => {
+    const locale = localeOf(ctx.chat.id);
     const data = ctx.callbackQuery?.data || "";
     if (!data.startsWith("gh:test_status:")) return;
 
     const jobId = data.replace("gh:test_status:", "");
-    const result = await skills.github.getTestStatus(jobId);
-    await ctx.answerCbQuery("状态已刷新");
+    const result = await skills.github.getTestStatus(jobId, locale);
+    await ctx.answerCbQuery(t(locale, "callbackRefreshed"));
 
     if (!result) {
-      await sendChunkedMarkdown(ctx, `找不到测试任务: ${jobId}`);
+      await sendChunkedMarkdown(ctx, t(locale, "testJobNotFound", { jobId }));
       return;
     }
 
-    await sendSkillResult(ctx, result);
+    await sendSkillResult(ctx, result, locale);
   });
 
   bot.on("text", async (ctx) => {
     const text = ctx.message.text?.trim() || "";
+    const locale = localeOf(ctx.chat.id);
     if (!text) return;
     if (/^(重启\s*bot|重启机器人|restart bot)$/i.test(text)) {
-      await sendChunkedMarkdown(ctx, "请使用 /restart，而不是把它当作普通消息发送。");
+      await sendChunkedMarkdown(ctx, t(locale, "useRestartCommand"));
       return;
     }
     if (/^\/\s+\S+/.test(text)) {
       await sendChunkedMarkdown(
         ctx,
-        [
-          "命令格式错误：`/` 后面不要加空格。",
-          `try: ${text.replace(/^\/\s+/, "/")}`
-        ].join("\n")
+        t(locale, "slashSpaceError", {
+          fixed: text.replace(/^\/\s+/, "/")
+        })
       );
       return;
     }
@@ -628,28 +566,26 @@ export function registerHandlers({
       if (route.target === "pty") {
         const result = await ptyManager.sendPrompt(ctx, route.prompt);
         if (!result.started) {
-          await sendChunkedMarkdown(
-            ctx,
-            `当前已有 ${result.activeMode || "unknown"} 任务在运行。请等待完成或先使用 /interrupt。`
-          );
+          await sendChunkedMarkdown(ctx, t(locale, "taskBusy", { mode: result.activeMode || "unknown" }));
         }
         return;
       }
 
       const skill = skills[route.skill];
       if (!skill) {
-        await sendChunkedMarkdown(ctx, `未找到 skill: ${route.skill}`);
+        await sendChunkedMarkdown(ctx, t(locale, "skillNotFound", { name: route.skill }));
         return;
       }
 
       const result = await skill.execute({
         text: route.payload,
         ctx,
-        workdir: ptyManager.getStatus(ctx.chat.id).workdir
+        workdir: ptyManager.getStatus(ctx.chat.id).workdir,
+        locale
       });
-      await sendSkillResult(ctx, result);
+      await sendSkillResult(ctx, result, locale);
     } catch (error) {
-      await sendChunkedMarkdown(ctx, `处理消息失败: ${error.message}`);
+      await sendChunkedMarkdown(ctx, t(locale, "processingFailed", { error: error.message }));
     }
   });
 }

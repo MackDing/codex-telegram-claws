@@ -133,6 +133,7 @@ General:
 - `/auto <task>` - force a one-off `codex exec --full-auto`
 - `/plan <task>` - ask Codex for a plan only, without direct file modification intent
 - `/model [name|reset]` - show or set the model override for the current chat
+- `/language [en|zh|zh-HK]` - show or set the system language for the current chat
 - `/verbose [on|off]` - show or toggle system notices for the current chat
 - `/skill list` - show skill switches for the current chat
 - `/skill status` - alias of `/skill list`
@@ -176,6 +177,7 @@ Telegram adaptation notes:
 - `/sh` is implemented by the bot, never invokes a shell interpreter, and only accepts configured command prefixes
 - `/sh` is read-only by default; dangerous prefixes can be configured and require `--confirm` when writable mode is enabled
 - `/plan` translates to a planning-only prompt instead of passing a raw `/plan` slash command to Codex
+- The default system language is English; use `/language zh` or `/language zh-HK` for localized bot responses
 - `/verbose off` keeps Telegram output quiet by hiding fallback, startup, and session-exit notices for the current chat
 
 ## Streaming and Reasoning Visualization
@@ -293,7 +295,7 @@ Telegram can manage runtime usage of Bot-side MCP and skills, but not install ar
 - MCP servers are process-level runtime resources: list, inspect, reconnect, enable, disable
 - Skills are chat-level routing switches: each chat can enable or disable `github` and `mcp` independently
 - Codex's own MCP remains separate and is not managed through these bot commands
-- Runtime state is persisted to `STATE_FILE`, so `/mcp enable|disable`, `/skill on|off`, and per-project Codex conversation slots survive bot restarts
+- Runtime state is persisted to `STATE_FILE`, so `/mcp enable|disable`, `/skill on|off`, `/language`, `/verbose`, and per-project Codex conversation slots survive bot restarts
 
 ## Troubleshooting
 

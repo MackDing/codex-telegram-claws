@@ -1,4 +1,5 @@
 import { suggestClosestWord } from "../../bot/commandUtils.js";
+import { t } from "../../bot/i18n.js";
 
 export class McpSkill {
   constructor({ mcpClient }) {
@@ -10,38 +11,29 @@ export class McpSkill {
     return normalized.startsWith("/mcp") || normalized.includes("mcp ");
   }
 
-  async execute({ text }) {
+  async execute({ text, locale = "en" }) {
     if (!this.mcpClient.hasServers()) {
       return {
-        text: "MCP server 未配置。请先在 .env 的 MCP_SERVERS 中添加服务定义。"
+        text: t(locale, "mcpServerNotConfigured")
       };
     }
 
     const normalized = text.trim();
     if (normalized.startsWith("/mcp")) {
-      return this.handleCommand(normalized);
+      return this.handleCommand(normalized, locale);
     }
 
     return {
-      text: "当前仅支持显式 MCP 命令。请使用 /mcp tools <server> 或 /mcp call <server> <tool> <jsonArgs>。"
+      text: t(locale, "mcpExplicitOnly")
     };
   }
 
-  async handleCommand(rawText) {
+  async handleCommand(rawText, locale = "en") {
     const stripped = rawText.replace(/^\/mcp(@\w+)?\s*/i, "").trim();
     const supportedSubcommands = ["list", "status", "reconnect", "enable", "disable", "tools", "call"];
     if (!stripped) {
       return {
-        text: [
-          "MCP 指令示例：",
-          "/mcp list",
-          "/mcp status [server]",
-          "/mcp reconnect <server>",
-          "/mcp enable <server>",
-          "/mcp disable <server>",
-          "/mcp tools <server>",
-          '/mcp call <server> <tool> {"query":"hello"}'
-        ].join("\n")
+        text: t(locale, "mcpHelp")
       };
     }
 
@@ -49,17 +41,11 @@ export class McpSkill {
     if (subcommand === "list") {
       const servers = this.mcpClient.listServers();
       if (!servers.length) {
-        return { text: "没有配置 MCP server。" };
+        return { text: t(locale, "mcpNoServers") };
       }
 
       return {
-        text: [
-          "MCP servers:",
-          ...servers.map(
-            (server) =>
-              `- ${server.name}: ${server.enabled ? "enabled" : "disabled"}, ${server.connected ? "connected" : "disconnected"}`
-          )
-        ].join("\n")
+        text: t(locale, "mcpList", { servers })
       };
     }
 
@@ -69,80 +55,66 @@ export class McpSkill {
       const targets = serverName ? servers.filter((server) => server.name === serverName) : servers;
 
       if (!targets.length) {
-        return { text: serverName ? `找不到 MCP server: ${serverName}` : "没有配置 MCP server。" };
+        return {
+          text: serverName ? t(locale, "mcpUnknownServer", { name: serverName }) : t(locale, "mcpNoServers")
+        };
       }
 
       return {
-        text: targets
-          .map(
-            (server) =>
-              [
-                `server: ${server.name}`,
-                `enabled: ${server.enabled ? "yes" : "no"}`,
-                `connected: ${server.connected ? "yes" : "no"}`,
-                `command: ${server.command}`,
-                `args: ${server.args.length ? server.args.join(" ") : "(none)"}`,
-                `cwd: ${server.cwd}`
-              ].join("\n")
-          )
-          .join("\n\n")
+        text: t(locale, "mcpStatus", { servers: targets })
       };
     }
 
     if (subcommand === "reconnect") {
       const serverName = rest[0];
       if (!serverName) {
-        return { text: "用法: /mcp reconnect <server>" };
+        return { text: t(locale, "mcpUsageReconnect") };
       }
 
       const result = await this.mcpClient.reconnectServer(serverName);
       return {
-        text: `${result.name} 已重连。enabled: ${result.enabled ? "yes" : "no"}, connected: ${result.connected ? "yes" : "no"}`
+        text: t(locale, "mcpReconnected", { result })
       };
     }
 
     if (subcommand === "enable") {
       const serverName = rest[0];
       if (!serverName) {
-        return { text: "用法: /mcp enable <server>" };
+        return { text: t(locale, "mcpUsageEnable") };
       }
 
       const result = await this.mcpClient.enableServer(serverName);
       return {
-        text: result.changed
-          ? `${result.name} 已启用。connected: ${result.connected ? "yes" : "no"}`
-          : `${result.name} 已处于启用状态。connected: ${result.connected ? "yes" : "no"}`
+        text: t(locale, "mcpEnableResult", { result })
       };
     }
 
     if (subcommand === "disable") {
       const serverName = rest[0];
       if (!serverName) {
-        return { text: "用法: /mcp disable <server>" };
+        return { text: t(locale, "mcpUsageDisable") };
       }
 
       const result = await this.mcpClient.disableServer(serverName);
       return {
-        text: result.changed
-          ? `${result.name} 已禁用。connected: ${result.connected ? "yes" : "no"}`
-          : `${result.name} 已处于禁用状态。connected: ${result.connected ? "yes" : "no"}`
+        text: t(locale, "mcpDisableResult", { result })
       };
     }
 
     if (subcommand === "tools") {
       const serverName = rest[0];
       if (!serverName) {
-        return { text: "用法: /mcp tools <server>" };
+        return { text: t(locale, "mcpUsageTools") };
       }
 
       const tools = await this.mcpClient.listTools(serverName);
       if (!tools.length) {
-        return { text: `${serverName} 没有可用工具。` };
+        return { text: t(locale, "mcpNoTools", { server: serverName }) };
       }
 
       const lines = tools.map((tool) => `- ${tool.name}: ${tool.description || "No description"}`);
       return {
-        text: [`${serverName} tools:`, ...lines].join("\n")
+        text: t(locale, "mcpTools", { server: serverName, lines })
       };
     }
 
@@ -152,7 +124,7 @@ export class McpSkill {
       const jsonPart = rest.slice(2).join(" ").trim();
 
       if (!serverName || !toolName) {
-        return { text: "用法: /mcp call <server> <tool> <jsonArgs>" };
+        return { text: t(locale, "mcpUsageCall") };
       }
 
       let args = {};
@@ -160,7 +132,7 @@ export class McpSkill {
         try {
           args = JSON.parse(jsonPart);
         } catch (error) {
-          return { text: `JSON 参数解析失败: ${error.message}` };
+          return { text: t(locale, "mcpJsonParseFailed", { error: error.message }) };
         }
       }
 
@@ -177,9 +149,11 @@ export class McpSkill {
 
     const suggested = suggestClosestWord(subcommand, supportedSubcommands);
     return {
-      text: suggested
-        ? `未知 MCP 子命令: ${subcommand}。你是不是想输入 \`/mcp ${suggested}\`?`
-        : `未知 MCP 子命令: ${subcommand}。支持: ${supportedSubcommands.join(", ")}。`
+      text: t(locale, "mcpUnknownSubcommand", {
+        subcommand,
+        suggested,
+        supported: supportedSubcommands
+      })
     };
   }
 }

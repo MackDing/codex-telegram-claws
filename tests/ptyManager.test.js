@@ -59,6 +59,15 @@ test("pty manager stores verbose preference per chat", () => {
   assert.equal(manager.getStatus(123).verboseOutput, true);
 });
 
+test("pty manager stores language preference per chat", () => {
+  const manager = createManager();
+
+  assert.equal(manager.getLanguage(123), "en");
+  manager.setLanguage(123, "zh-HK");
+  assert.equal(manager.getLanguage(123), "zh-HK");
+  assert.equal(manager.getStatus(123).language, "zh-HK");
+});
+
 test("pty manager status exposes runner workdir and MCP server names", () => {
   const manager = createManager();
   const status = manager.getStatus(456);
@@ -205,6 +214,16 @@ test("pty manager exports and restores verbose preference", () => {
   restored.restoreState(manager.exportState());
 
   assert.equal(restored.isVerbose(42), true);
+});
+
+test("pty manager exports and restores language preference", () => {
+  const manager = createManager();
+  manager.setLanguage(42, "zh");
+
+  const restored = createManager();
+  restored.restoreState(manager.exportState());
+
+  assert.equal(restored.getLanguage(42), "zh");
 });
 
 test("pty manager hides exec fallback notices when verbose output is off", async () => {

@@ -5,6 +5,7 @@ import {
   matchesAllowedCommandPrefix,
   parseCommandLine
 } from "./commandLine.js";
+import { t } from "../bot/i18n.js";
 
 function trimOutputTail(value, maxChars) {
   if (value.length <= maxChars) return value;
@@ -41,9 +42,9 @@ export class ShellManager {
     return [...(this.config.shell.dangerousCommands || [])];
   }
 
-  inspectCommand(rawCommand) {
+  inspectCommand(rawCommand, { locale = "en" } = {}) {
     if (!this.isEnabled()) {
-      throw new Error("受限 Shell 功能未启用。先在 .env 中设置 SHELL_ENABLED=true。");
+      throw new Error(t(locale, "shellDisabled"));
     }
 
     let commandText = String(rawCommand || "").trim();
@@ -55,27 +56,25 @@ export class ShellManager {
     }
 
     if (!commandText) {
-      throw new Error("用法: /sh <command>");
+      throw new Error(t(locale, "usageSh"));
     }
 
     if (hasForbiddenShellSyntax(commandText)) {
-      throw new Error("不支持管道、重定向、命令替换或多条 shell 语句。");
+      throw new Error(t(locale, "shellForbiddenSyntax"));
     }
 
     const argv = parseCommandLine(commandText);
     if (!argv.length) {
-      throw new Error("无法解析命令。");
+      throw new Error(t(locale, "shellCannotParse"));
     }
 
     if (!matchesAllowedCommandPrefix(argv, this.allowedPrefixes)) {
-      throw new Error(
-        `命令不在白名单中。允许前缀: ${this.getAllowedCommands().join(", ")}`
-      );
+      throw new Error(t(locale, "shellNotAllowlisted", { allowed: this.getAllowedCommands().join(", ") }));
     }
 
     const dangerous = matchesAllowedCommandPrefix(argv, this.dangerousPrefixes);
     if (dangerous && this.isReadOnly()) {
-      throw new Error("当前 /sh 处于只读模式，禁止执行写操作命令。");
+      throw new Error(t(locale, "shellReadonly"));
     }
 
     return {
@@ -88,16 +87,20 @@ export class ShellManager {
     };
   }
 
-  validateCommand(rawCommand) {
-    const inspected = this.inspectCommand(rawCommand);
+  validateCommand(rawCommand, { locale = "en" } = {}) {
+    const inspected = this.inspectCommand(rawCommand, { locale });
     if (inspected.requiresConfirmation) {
-      throw new Error(`该命令需要二次确认。请发送: ${inspected.confirmationCommand}`);
+      throw new Error(
+        t(locale, "shellNeedsConfirmation", {
+          command: inspected.confirmationCommand
+        })
+      );
     }
 
     return inspected.argv;
   }
 
-  async execute({ chatId, rawCommand, workdir }) {
+  async execute({ chatId, rawCommand, workdir, locale = "en" }) {
     const key = String(chatId);
     if (this.isBusy(key)) {
       return {
@@ -106,7 +109,7 @@ export class ShellManager {
       };
     }
 
-    const argv = this.validateCommand(rawCommand);
+    const argv = this.validateCommand(rawCommand, { locale });
     const [command, ...args] = argv;
     const outputLimit = this.config.shell.maxOutputChars;
 

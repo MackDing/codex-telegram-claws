@@ -32,8 +32,11 @@ test("parseCommandLine keeps quoted arguments together", () => {
 test("shell manager rejects shell metacharacters and commands outside the allowlist", () => {
   const manager = createShellManager();
 
-  assert.throws(() => manager.validateCommand("git status && pwd"), /不支持管道、重定向、命令替换或多条 shell 语句/);
-  assert.throws(() => manager.validateCommand("rm -rf ."), /命令不在白名单中/);
+  assert.throws(
+    () => manager.validateCommand("git status && pwd"),
+    /Pipes, redirection, command substitution/
+  );
+  assert.throws(() => manager.validateCommand("rm -rf ."), /Command is not allowlisted/);
 });
 
 test("shell manager marks dangerous commands for confirmation when writable", () => {
@@ -55,7 +58,7 @@ test("shell manager blocks dangerous commands in read-only mode", () => {
     allowedCommands: ["git push", "git status"]
   });
 
-  assert.throws(() => manager.inspectCommand("git push"), /当前 \/sh 处于只读模式/);
+  assert.throws(() => manager.inspectCommand("git push"), /currently read-only/);
 });
 
 test("shell manager allows confirmed dangerous commands when writable", () => {
@@ -95,6 +98,14 @@ test("shell manager reports disabled mode before execution", () => {
 
   assert.throws(
     () => manager.validateCommand("pwd"),
-    /受限 Shell 功能未启用/
+    /Restricted shell is not enabled/
   );
+});
+
+test("shell manager localizes validation errors when locale is zh", () => {
+  const manager = createShellManager({
+    enabled: false
+  });
+
+  assert.throws(() => manager.validateCommand("pwd", { locale: "zh" }), /受限 Shell 功能未启用/);
 });
