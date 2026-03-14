@@ -1,6 +1,28 @@
 import "dotenv/config";
 import process from "node:process";
 
+interface TelegramBotUser {
+  id: number;
+  username: string;
+}
+
+interface TelegramSendMessageResult {
+  message_id: number;
+}
+
+interface TelegramApiSuccess<T> {
+  ok: true;
+  result: T;
+  description?: string;
+}
+
+interface TelegramApiFailure {
+  ok: false;
+  description?: string;
+}
+
+type TelegramApiResponse<T> = TelegramApiSuccess<T> | TelegramApiFailure;
+
 const token = String(process.env.BOT_TOKEN || "").trim();
 const expectedUsername = String(process.env.TELEGRAM_EXPECTED_USERNAME || "")
   .trim()
@@ -13,7 +35,8 @@ if (!token) {
 }
 
 const getMeResponse = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-const getMePayload = await getMeResponse.json();
+const getMePayload =
+  (await getMeResponse.json()) as TelegramApiResponse<TelegramBotUser>;
 
 if (!getMeResponse.ok || !getMePayload?.ok) {
   console.error(
@@ -46,7 +69,8 @@ if (smokeChatId) {
       })
     }
   );
-  const sendPayload = await sendResponse.json();
+  const sendPayload =
+    (await sendResponse.json()) as TelegramApiResponse<TelegramSendMessageResult>;
 
   if (!sendResponse.ok || !sendPayload?.ok) {
     console.error(
