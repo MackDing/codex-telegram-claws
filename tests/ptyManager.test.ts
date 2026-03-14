@@ -5,10 +5,40 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PtyManager } from "../src/runner/ptyManager.js";
 
-function createManager(overrides = {}) {
+type PtyManagerConstructorOptions = ConstructorParameters<typeof PtyManager>[0];
+type TelegramStub = PtyManagerConstructorOptions["bot"]["telegram"];
+type CodexClientFactory = NonNullable<
+  PtyManagerConstructorOptions["codexClientFactory"]
+>;
+
+interface ManagerOverrides {
+  runnerCwd?: string;
+  workspaceRoot?: string;
+  telegram?: TelegramStub;
+  backend?: PtyManagerConstructorOptions["config"]["runner"]["backend"];
+  codexClientFactory?: CodexClientFactory;
+}
+
+interface FakeSequence {
+  initialId?: string | null;
+  events: () => AsyncGenerator<unknown>;
+}
+
+type FakeCall =
+  | { action: "start"; options: Record<string, unknown> }
+  | { action: "resume"; id: string; options: Record<string, unknown> };
+
+interface SentMessageRecord {
+  chatId: string | number;
+  text: string;
+  messageId?: number;
+  edited?: boolean;
+}
+
+function createManager(overrides: ManagerOverrides = {}) {
   const runnerCwd = overrides.runnerCwd || process.cwd();
   const workspaceRoot = overrides.workspaceRoot || runnerCwd;
-  const telegram = overrides.telegram || {
+  const telegram: TelegramStub = overrides.telegram || {
     sendMessage: async () => ({ message_id: 1 }),
     editMessageText: async () => ({}),
     deleteMessage: async () => ({})
@@ -39,16 +69,34 @@ function createManager(overrides = {}) {
         mode: "spoiler"
       },
       mcp: {
-        servers: [{ name: "context7" }, { name: "sequential-thinking" }]
+        servers: [
+          {
+            name: "context7",
+            command: "npx",
+            args: [],
+            cwd: runnerCwd,
+            env: {}
+          },
+          {
+            name: "sequential-thinking",
+            command: "npx",
+            args: [],
+            cwd: runnerCwd,
+            env: {}
+          }
+        ]
       }
     },
     codexClientFactory: overrides.codexClientFactory
   });
 }
 
-function createFakeCodexClient(sequences, calls = []) {
-  return () => ({
-    startThread(options = {}) {
+function createFakeCodexClient(
+  sequences: FakeSequence[],
+  calls: FakeCall[] = []
+): CodexClientFactory {
+  return (() => ({
+    startThread(options: Record<string, unknown> = {}) {
       const next = sequences.shift();
       if (!next) {
         throw new Error("No fake SDK sequence available for startThread");
@@ -68,7 +116,7 @@ function createFakeCodexClient(sequences, calls = []) {
         }
       };
     },
-    resumeThread(id, options = {}) {
+    resumeThread(id: string, options: Record<string, unknown> = {}) {
       const next = sequences.shift();
       if (!next) {
         throw new Error("No fake SDK sequence available for resumeThread");
@@ -89,10 +137,20 @@ function createFakeCodexClient(sequences, calls = []) {
         }
       };
     }
-  });
+  })) as CodexClientFactory;
 }
 
-async function waitFor(predicate, timeoutMs = 2000) {
+function createExecFallbackSession(
+  chatId: string
+): ReturnType<PtyManager["startExecSessionWithOptions"]> {
+  return {
+    mode: "exec",
+    streamMessageIds: [],
+    chatId
+  } as unknown as ReturnType<PtyManager["startExecSessionWithOptions"]>;
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2000) {
   const startedAt = Date.now();
   while (!predicate()) {
     if (Date.now() - startedAt > timeoutMs) {
@@ -309,8 +367,8 @@ test("pty manager exports and restores language preference", () => {
 });
 
 test("pty manager stores SDK thread ids per project and resumes them", async () => {
-  const calls = [];
-  const sentMessages = [];
+  const calls: FakeCall[] = [];
+  const sentMessages: SentMessageRecord[] = [];
   const sequences = [
     {
       events: async function* () {
@@ -360,11 +418,16 @@ test("pty manager stores SDK thread ids per project and resumes them", async () 
   const manager = createManager({
     backend: "sdk",
     telegram: {
-      sendMessage: async (chatId, text) => {
+      sendMessage: async (chatId: string | number, text: string) => {
         sentMessages.push({ chatId, text });
         return { message_id: sentMessages.length };
       },
-      editMessageText: async (chatId, messageId, _, text) => {
+      editMessageText: async (
+        chatId: string | number,
+        messageId: number,
+        _inlineMessageId: string | undefined,
+        text: string
+      ) => {
         sentMessages.push({ chatId, messageId, text, edited: true });
         return {};
       },
@@ -382,18 +445,26 @@ test("pty manager stores SDK thread ids per project and resumes them", async () 
   );
   assert.equal(calls[0].action, "start");
   assert.equal(calls[0].options.workingDirectory, process.cwd());
-  assert.match(sentMessages.at(-1).text, /Project A ready/);
+  const firstMessage = sentMessages.at(-1);
+  if (!firstMessage) {
+    throw new Error("Expected at least one Telegram message");
+  }
+  assert.match(firstMessage.text, /Project A ready/);
 
   await manager.sendPrompt({ chat: { id: 9 } }, "continue project a");
   await waitFor(() => !manager.getStatus(9).active);
 
   assert.equal(calls[1].action, "resume");
   assert.equal(calls[1].id, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
-  assert.match(sentMessages.at(-1).text, /Project A resumed/);
+  const resumedMessage = sentMessages.at(-1);
+  if (!resumedMessage) {
+    throw new Error("Expected a resumed Telegram message");
+  }
+  assert.match(resumedMessage.text, /Project A resumed/);
 });
 
 test("pty manager does not persist SDK thread ids for one-off runs", async () => {
-  const calls = [];
+  const calls: FakeCall[] = [];
   const manager = createManager({
     backend: "sdk",
     codexClientFactory: createFakeCodexClient(
@@ -439,22 +510,20 @@ test("pty manager does not persist SDK thread ids for one-off runs", async () =>
 });
 
 test("pty manager hides exec fallback notices when verbose output is off", async () => {
-  const sentMessages = [];
+  const sentMessages: SentMessageRecord[] = [];
   const manager = createManager({
     telegram: {
-      sendMessage: async (chatId, text) => {
+      sendMessage: async (chatId: string | number, text: string) => {
         sentMessages.push({ chatId, text });
         return { message_id: sentMessages.length };
-      }
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
     }
   });
 
   manager.ensureSession = () => null;
-  manager.startExecSessionWithOptions = () => ({
-    mode: "exec",
-    streamMessageIds: [],
-    chatId: "77"
-  });
+  manager.startExecSessionWithOptions = () => createExecFallbackSession("77");
 
   await manager.sendPrompt({ chat: { id: 77 } }, "who are u");
 
@@ -462,23 +531,21 @@ test("pty manager hides exec fallback notices when verbose output is off", async
 });
 
 test("pty manager shows exec fallback notices when verbose output is on", async () => {
-  const sentMessages = [];
+  const sentMessages: SentMessageRecord[] = [];
   const manager = createManager({
     telegram: {
-      sendMessage: async (chatId, text) => {
+      sendMessage: async (chatId: string | number, text: string) => {
         sentMessages.push({ chatId, text });
         return { message_id: sentMessages.length };
-      }
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
     }
   });
 
   manager.setVerbose(77, true);
   manager.ensureSession = () => null;
-  manager.startExecSessionWithOptions = () => ({
-    mode: "exec",
-    streamMessageIds: [],
-    chatId: "77"
-  });
+  manager.startExecSessionWithOptions = () => createExecFallbackSession("77");
 
   await manager.sendPrompt({ chat: { id: 77 } }, "who are u");
 

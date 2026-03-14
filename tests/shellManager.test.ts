@@ -9,7 +9,16 @@ import {
 } from "../src/runner/commandLine.js";
 import { ShellManager } from "../src/runner/shellManager.js";
 
-function createShellManager(overrides = {}) {
+interface ShellManagerOverrides {
+  enabled?: boolean;
+  readOnly?: boolean;
+  allowedCommands?: string[];
+  dangerousCommands?: string[];
+  timeoutMs?: number;
+  maxOutputChars?: number;
+}
+
+function createShellManager(overrides: ShellManagerOverrides = {}) {
   return new ShellManager({
     config: {
       shell: {
@@ -121,6 +130,9 @@ test("shell manager executes an allowed command without invoking a shell", async
   assert.equal(result.started, true);
   assert.equal(result.status, "passed");
   assert.equal(result.workdir, workdir);
+  if (!result.output) {
+    throw new Error("Expected shell output");
+  }
   assert.match(
     result.output,
     new RegExp(workdir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))

@@ -37,7 +37,10 @@ test("github skill returns commit-and-push success text from a stub git client",
     branch: async () => ({
       current: "main"
     }),
-    push: async () => {}
+    push: async () => {},
+    getRemotes: async () => [],
+    addRemote: async () => {},
+    remote: async () => {}
   });
 
   const result = await skill.commitAndPush(
