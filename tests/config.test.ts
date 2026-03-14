@@ -43,7 +43,10 @@ const ENV_KEYS = [
 
 type EnvKey = (typeof ENV_KEYS)[number];
 
-function withEnv<T>(overrides: Partial<Record<EnvKey, string>>, fn: () => T): T {
+function withEnv<T>(
+  overrides: Partial<Record<EnvKey, string>>,
+  fn: () => T
+): T {
   const previous = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 
   for (const key of ENV_KEYS) {

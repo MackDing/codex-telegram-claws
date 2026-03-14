@@ -25,9 +25,7 @@ function createClient() {
   });
 }
 
-function createConnection(
-  onClose: () => Promise<void> = async () => {}
-) {
+function createConnection(onClose: () => Promise<void> = async () => {}) {
   return {
     client: {
       connect: async () => {},

@@ -9,7 +9,7 @@
     "dev": "tsx watch src/index.ts",
     "check": "npm run typecheck",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test",
+    "test": "node --import tsx --test tests/*.test.ts",
     "lint": "eslint src tests scripts eslint.config.js ecosystem.config.cjs",
     "lint:fix": "npm run lint -- --fix",
     "format": "prettier --write .",
