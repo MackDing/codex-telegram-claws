@@ -39,9 +39,11 @@ const ENV_KEYS = [
   "GITHUB_DEFAULT_WORKDIR",
   "GITHUB_DEFAULT_BRANCH",
   "E2E_TEST_COMMAND"
-];
+] as const;
 
-function withEnv(overrides, fn) {
+type EnvKey = (typeof ENV_KEYS)[number];
+
+function withEnv<T>(overrides: Partial<Record<EnvKey, string>>, fn: () => T): T {
   const previous = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 
   for (const key of ENV_KEYS) {
@@ -64,7 +66,7 @@ function withEnv(overrides, fn) {
   }
 }
 
-function withMutedWarnings(fn) {
+function withMutedWarnings<T>(fn: () => T): T {
   const originalWarn = console.warn;
   console.warn = () => {};
 

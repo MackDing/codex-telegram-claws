@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Router } from "../src/orchestrator/router.js";
 
-function createSkill(supports) {
+function createSkill(supports: (text: string) => boolean) {
   return { supports };
 }
 

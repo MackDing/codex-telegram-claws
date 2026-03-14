@@ -25,13 +25,24 @@ function createClient() {
   });
 }
 
+function createConnection(
+  onClose: () => Promise<void> = async () => {}
+) {
+  return {
+    client: {
+      connect: async () => {},
+      listTools: async () => ({ tools: [] }),
+      callTool: async () => ""
+    },
+    transport: {
+      close: onClose
+    }
+  };
+}
+
 test("mcp client lists configured servers and their runtime state", () => {
   const client = createClient();
-  client.connections.set("context7", {
-    transport: {
-      close: async () => {}
-    }
-  });
+  client.connections.set("context7", createConnection());
 
   assert.deepEqual(
     client.listServers().map((server) => ({
@@ -51,19 +62,21 @@ test("mcp client disable and enable update runtime state", async () => {
   let connectCalls = 0;
   client.connectServer = async (server) => {
     connectCalls += 1;
-    client.connections.set(server.name, {
-      transport: {
-        close: async () => {}
-      }
-    });
+    client.connections.set(server.name, createConnection());
   };
 
   const disabled = await client.disableServer("context7");
+  if (disabled === null) {
+    throw new Error("Expected context7 disable result");
+  }
   assert.equal(disabled.changed, true);
   assert.equal(client.isServerEnabled("context7"), false);
   assert.equal(client.isServerConnected("context7"), false);
 
   const enabled = await client.enableServer("context7");
+  if (enabled === null) {
+    throw new Error("Expected context7 enable result");
+  }
   assert.equal(enabled.changed, true);
   assert.equal(client.isServerEnabled("context7"), true);
   assert.equal(client.isServerConnected("context7"), true);
@@ -72,25 +85,23 @@ test("mcp client disable and enable update runtime state", async () => {
 
 test("mcp client reconnect refreshes a known enabled server", async () => {
   const client = createClient();
-  const closes = [];
+  const closes: string[] = [];
   let connectCalls = 0;
-  client.connections.set("context7", {
-    transport: {
-      close: async () => {
-        closes.push("context7");
-      }
-    }
-  });
+  client.connections.set(
+    "context7",
+    createConnection(async () => {
+      closes.push("context7");
+    })
+  );
   client.connectServer = async (server) => {
     connectCalls += 1;
-    client.connections.set(server.name, {
-      transport: {
-        close: async () => {}
-      }
-    });
+    client.connections.set(server.name, createConnection());
   };
 
   const result = await client.reconnectServer("context7");
+  if (result === null) {
+    throw new Error("Expected context7 reconnect result");
+  }
 
   assert.equal(result.name, "context7");
   assert.equal(result.connected, true);
@@ -114,19 +125,19 @@ test("mcp client exports and restores disabled server state", () => {
 test("mcp client reports idempotent enable and disable operations", async () => {
   const client = createClient();
   client.connectServer = async (server) => {
-    client.connections.set(server.name, {
-      transport: {
-        close: async () => {}
-      }
-    });
+    client.connections.set(server.name, createConnection());
   };
-  client.connections.set("context7", {
-    transport: {
-      close: async () => {}
-    }
-  });
+  client.connections.set("context7", createConnection());
 
-  assert.equal((await client.enableServer("context7")).changed, false);
-  assert.equal((await client.disableServer("context7")).changed, true);
-  assert.equal((await client.disableServer("context7")).changed, false);
+  const enabled = await client.enableServer("context7");
+  const disabled = await client.disableServer("context7");
+  const disabledAgain = await client.disableServer("context7");
+
+  if (enabled === null || disabled === null || disabledAgain === null) {
+    throw new Error("Expected idempotent enable/disable results");
+  }
+
+  assert.equal(enabled.changed, false);
+  assert.equal(disabled.changed, true);
+  assert.equal(disabledAgain.changed, false);
 });

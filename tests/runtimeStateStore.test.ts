@@ -11,6 +11,7 @@ test("runtime state store saves and loads MCP and skill state", async () => {
   const store = new RuntimeStateStore({
     config: {
       app: {
+        name: "codex-telegram-claws",
         stateFile: file
       }
     }
@@ -23,13 +24,17 @@ test("runtime state store saves and loads MCP and skill state", async () => {
     runner: {
       chats: {
         42: {
+          preferredModel: null,
           language: "zh-HK",
           verboseOutput: true,
           currentWorkdir: "project-a",
           recentWorkdirs: ["project-a", "project-b"],
           projects: {
             "project-a": {
-              lastSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+              lastSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+              lastMode: null,
+              lastExitCode: null,
+              lastExitSignal: null
             }
           }
         }
@@ -52,13 +57,17 @@ test("runtime state store saves and loads MCP and skill state", async () => {
   assert.deepEqual(state.runner, {
     chats: {
       42: {
+        preferredModel: null,
         language: "zh-HK",
         verboseOutput: true,
         currentWorkdir: "project-a",
         recentWorkdirs: ["project-a", "project-b"],
         projects: {
           "project-a": {
-            lastSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+            lastSessionId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            lastMode: null,
+            lastExitCode: null,
+            lastExitSignal: null
           }
         }
       }
