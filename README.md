@@ -76,6 +76,9 @@ Key design goals:
 - Codex CLI -- https://github.com/openai/codex
 - Telegram Bot Token -- from `@BotFather`
 
+## Screenshot
+
+
 ### Install
 
 ```bash
