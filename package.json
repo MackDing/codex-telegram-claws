@@ -7,6 +7,13 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
+    "feishu:install": "npm --prefix bridge/claude-to-im install",
+    "feishu:setup": "CTI_HOME=${CTI_HOME:-$HOME/.codexclaw-bridge} bash scripts/feishuBridgeSetup.sh",
+    "feishu:start": "CTI_HOME=${CTI_HOME:-$HOME/.codexclaw-bridge} CTI_LAUNCHD_LABEL=${CTI_LAUNCHD_LABEL:-com.codexclaw.feishu.bridge} bash bridge/claude-to-im/scripts/daemon.sh start",
+    "feishu:stop": "CTI_HOME=${CTI_HOME:-$HOME/.codexclaw-bridge} CTI_LAUNCHD_LABEL=${CTI_LAUNCHD_LABEL:-com.codexclaw.feishu.bridge} bash bridge/claude-to-im/scripts/daemon.sh stop",
+    "feishu:status": "CTI_HOME=${CTI_HOME:-$HOME/.codexclaw-bridge} CTI_LAUNCHD_LABEL=${CTI_LAUNCHD_LABEL:-com.codexclaw.feishu.bridge} bash bridge/claude-to-im/scripts/daemon.sh status",
+    "feishu:logs": "CTI_HOME=${CTI_HOME:-$HOME/.codexclaw-bridge} CTI_LAUNCHD_LABEL=${CTI_LAUNCHD_LABEL:-com.codexclaw.feishu.bridge} bash bridge/claude-to-im/scripts/daemon.sh logs 100",
+    "feishu:doctor": "CTI_HOME=${CTI_HOME:-$HOME/.codexclaw-bridge} CTI_LAUNCHD_LABEL=${CTI_LAUNCHD_LABEL:-com.codexclaw.feishu.bridge} bash bridge/claude-to-im/scripts/doctor.sh",
     "check": "npm run typecheck",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",

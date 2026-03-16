@@ -125,6 +125,21 @@ Development mode:
 npm run dev
 ```
 
+### Feishu Bridge (Card Permission Approval)
+
+This repo now vendors a full `claude-to-im` runtime under `bridge/claude-to-im`,
+so you can run Feishu with card-based permission approval flow from this project.
+Default bridge home is isolated at `~/.codexclaw-bridge` to avoid conflicts with existing standalone `claude-to-im` installs.
+
+```bash
+npm run feishu:setup
+npm run feishu:install
+npm run feishu:start
+npm run feishu:status
+```
+
+More details: `docs/feishu-bridge.md`
+
 Validation:
 
 ```bash

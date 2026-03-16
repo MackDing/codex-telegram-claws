@@ -3,3 +3,7 @@ node_modules/
 .DS_Store
 npm-debug.log*
 .codex-telegram-claws-state.json
+bridge/claude-to-im/dist/
+bridge/claude-to-im/config.env
+bridge/claude-to-im/.env
+bridge/claude-to-im/.env.*
