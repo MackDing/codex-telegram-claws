@@ -345,6 +345,15 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
     sessionRestored: ({ project, mode }) =>
       `Resumed Codex for ${project} (${mode}).`,
     sessionStarted: ({ mode }) => `Started Codex (${mode}).`,
+    artifactBatchNotice: ({ sentCount, totalCount, fileLines, omittedCount }) =>
+      joinLines([
+        `Generated ${totalCount} file(s) in this turn.`,
+        "Sending these Telegram attachments:",
+        ...fileLines,
+        omittedCount > 0
+          ? `Not sent automatically: ${omittedCount} more file(s).`
+          : "All eligible files are being sent."
+      ]),
     mcpServerNotConfigured:
       "No MCP servers are configured. Add server definitions to MCP_SERVERS in .env first.",
     mcpExplicitOnly:
@@ -802,6 +811,15 @@ const MESSAGES: Record<Locale, TranslationCatalog> = {
     sessionRestored: ({ project, mode }) =>
       `已恢复 ${project} 的 Codex 会话 (${mode})。`,
     sessionStarted: ({ mode }) => `Codex 会话已启动 (${mode})。`,
+    artifactBatchNotice: ({ sentCount, totalCount, fileLines, omittedCount }) =>
+      joinLines([
+        `本轮共生成 ${totalCount} 个文件。`,
+        "即将通过 Telegram 发送这些附件：",
+        ...fileLines,
+        omittedCount > 0
+          ? `还有 ${omittedCount} 个文件未自动发送。`
+          : "所有符合条件的文件都会发送。"
+      ]),
     mcpServerNotConfigured:
       "MCP server 未配置。请先在 .env 的 MCP_SERVERS 中添加服务定义。",
     mcpExplicitOnly:

@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { Markup } from "telegraf";
 import {
   buildPlanPrompt,
@@ -38,6 +41,33 @@ interface RegisterHandlersOptions {
     restart?: () => Promise<void>;
   };
 }
+
+type SupportedMediaType =
+  | "photo"
+  | "document"
+  | "video"
+  | "audio"
+  | "voice"
+  | "animation"
+  | "sticker"
+  | "video_note";
+
+interface TelegramMediaDescriptor {
+  type: SupportedMediaType;
+  fileId: string;
+  lines: string[];
+  fileName?: string;
+  mimeType?: string;
+  fileSize?: number;
+}
+
+const ATTACHMENT_CACHE_DIR = path.join(
+  "/tmp",
+  "codexclaw-telegram-attachments"
+);
+const MAX_ATTACHMENT_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_INLINE_TEXT_BYTES = 64 * 1024;
+const MAX_INLINE_TEXT_CHARS = 12000;
 
 async function sendChunkedMarkdown(
   ctx: any,
@@ -143,6 +173,329 @@ function suggestProjectName(
   );
 
   return suggestClosestWord(input, candidates, threshold);
+}
+
+function formatByteSize(size?: number): string {
+  if (!Number.isFinite(size) || !size || size < 0) {
+    return "unknown";
+  }
+
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function sanitizeFileName(name: string): string {
+  const cleaned = String(name || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "attachment";
+}
+
+function extensionFromMimeType(mimeType = ""): string {
+  const normalized = String(mimeType || "").toLowerCase();
+  switch (normalized) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    case "text/plain":
+      return ".txt";
+    case "application/json":
+      return ".json";
+    case "text/markdown":
+      return ".md";
+    case "text/csv":
+      return ".csv";
+    default:
+      return "";
+  }
+}
+
+function inferAttachmentFileName(media: TelegramMediaDescriptor): string {
+  if (media.fileName) {
+    return sanitizeFileName(media.fileName);
+  }
+
+  const suffix = extensionFromMimeType(media.mimeType);
+  return sanitizeFileName(`${media.type}${suffix}`);
+}
+
+function isInlineTextMimeType(mimeType = "", fileName = ""): boolean {
+  const normalizedMime = String(mimeType || "").toLowerCase();
+  const normalizedName = String(fileName || "").toLowerCase();
+
+  if (
+    normalizedMime.startsWith("text/") ||
+    normalizedMime === "application/json" ||
+    normalizedMime === "application/xml" ||
+    normalizedMime === "application/javascript"
+  ) {
+    return true;
+  }
+
+  return /\.(txt|md|markdown|json|yaml|yml|xml|csv|log|ts|tsx|js|jsx|mjs|cjs|py|rb|go|rs|java|kt|swift|sh|sql|html|css)$/i.test(
+    normalizedName
+  );
+}
+
+async function cacheTelegramAttachment(
+  media: TelegramMediaDescriptor,
+  fileUrl: string
+): Promise<{
+  cachedPath: string;
+  inlineText?: string;
+}> {
+  if (!fileUrl) {
+    throw new Error("Telegram file URL is unavailable.");
+  }
+
+  const response = await fetch(fileUrl);
+  if (!response.ok) {
+    throw new Error(`Attachment download failed with HTTP ${response.status}.`);
+  }
+
+  const contentLengthHeader = response.headers.get("content-length");
+  const contentLength = contentLengthHeader ? Number(contentLengthHeader) : NaN;
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > MAX_ATTACHMENT_DOWNLOAD_BYTES
+  ) {
+    throw new Error(
+      `Attachment is too large to cache (${formatByteSize(contentLength)}).`
+    );
+  }
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.byteLength > MAX_ATTACHMENT_DOWNLOAD_BYTES) {
+    throw new Error(
+      `Attachment is too large to cache (${formatByteSize(bytes.byteLength)}).`
+    );
+  }
+
+  await fs.mkdir(ATTACHMENT_CACHE_DIR, { recursive: true });
+  const hash = createHash("sha1")
+    .update(media.fileId)
+    .digest("hex")
+    .slice(0, 12);
+  const fileName = inferAttachmentFileName(media);
+  const targetPath = path.join(ATTACHMENT_CACHE_DIR, `${hash}-${fileName}`);
+  await fs.writeFile(targetPath, bytes);
+
+  let inlineText = "";
+  if (
+    isInlineTextMimeType(media.mimeType, media.fileName) &&
+    bytes.byteLength <= MAX_INLINE_TEXT_BYTES
+  ) {
+    inlineText = bytes.toString("utf8").slice(0, MAX_INLINE_TEXT_CHARS).trim();
+  }
+
+  return {
+    cachedPath: targetPath,
+    inlineText: inlineText || undefined
+  };
+}
+
+function detectTelegramMedia(message: any): TelegramMediaDescriptor | null {
+  if (Array.isArray(message?.photo) && message.photo.length) {
+    const photo = message.photo[message.photo.length - 1];
+    return {
+      type: "photo",
+      fileId: photo.file_id,
+      fileSize: photo.file_size,
+      lines: [
+        `attachment type: photo`,
+        `dimensions: ${photo.width || "unknown"}x${photo.height || "unknown"}`,
+        `size: ${formatByteSize(photo.file_size)}`
+      ]
+    };
+  }
+
+  if (message?.document?.file_id) {
+    const document = message.document;
+    return {
+      type: "document",
+      fileId: document.file_id,
+      fileName: document.file_name,
+      mimeType: document.mime_type,
+      fileSize: document.file_size,
+      lines: [
+        `attachment type: document`,
+        `file name: ${document.file_name || "unknown"}`,
+        `mime type: ${document.mime_type || "unknown"}`,
+        `size: ${formatByteSize(document.file_size)}`
+      ]
+    };
+  }
+
+  if (message?.video?.file_id) {
+    const video = message.video;
+    return {
+      type: "video",
+      fileId: video.file_id,
+      fileName: video.file_name,
+      mimeType: video.mime_type,
+      fileSize: video.file_size,
+      lines: [
+        `attachment type: video`,
+        `file name: ${video.file_name || "unknown"}`,
+        `mime type: ${video.mime_type || "unknown"}`,
+        `duration: ${video.duration ?? "unknown"} s`,
+        `dimensions: ${video.width || "unknown"}x${video.height || "unknown"}`,
+        `size: ${formatByteSize(video.file_size)}`
+      ]
+    };
+  }
+
+  if (message?.audio?.file_id) {
+    const audio = message.audio;
+    return {
+      type: "audio",
+      fileId: audio.file_id,
+      fileName: audio.file_name,
+      mimeType: audio.mime_type,
+      fileSize: audio.file_size,
+      lines: [
+        `attachment type: audio`,
+        `file name: ${audio.file_name || "unknown"}`,
+        `mime type: ${audio.mime_type || "unknown"}`,
+        `duration: ${audio.duration ?? "unknown"} s`,
+        `performer: ${audio.performer || "unknown"}`,
+        `title: ${audio.title || "unknown"}`,
+        `size: ${formatByteSize(audio.file_size)}`
+      ]
+    };
+  }
+
+  if (message?.voice?.file_id) {
+    const voice = message.voice;
+    return {
+      type: "voice",
+      fileId: voice.file_id,
+      mimeType: voice.mime_type,
+      fileSize: voice.file_size,
+      lines: [
+        `attachment type: voice`,
+        `mime type: ${voice.mime_type || "unknown"}`,
+        `duration: ${voice.duration ?? "unknown"} s`,
+        `size: ${formatByteSize(voice.file_size)}`
+      ]
+    };
+  }
+
+  if (message?.animation?.file_id) {
+    const animation = message.animation;
+    return {
+      type: "animation",
+      fileId: animation.file_id,
+      fileName: animation.file_name,
+      mimeType: animation.mime_type,
+      fileSize: animation.file_size,
+      lines: [
+        `attachment type: animation`,
+        `file name: ${animation.file_name || "unknown"}`,
+        `mime type: ${animation.mime_type || "unknown"}`,
+        `duration: ${animation.duration ?? "unknown"} s`,
+        `dimensions: ${animation.width || "unknown"}x${animation.height || "unknown"}`,
+        `size: ${formatByteSize(animation.file_size)}`
+      ]
+    };
+  }
+
+  if (message?.sticker?.file_id) {
+    const sticker = message.sticker;
+    return {
+      type: "sticker",
+      fileId: sticker.file_id,
+      lines: [
+        `attachment type: sticker`,
+        `emoji: ${sticker.emoji || "none"}`,
+        `set name: ${sticker.set_name || "unknown"}`,
+        `dimensions: ${sticker.width || "unknown"}x${sticker.height || "unknown"}`,
+        `animated: ${sticker.is_animated ? "yes" : "no"}`,
+        `video sticker: ${sticker.is_video ? "yes" : "no"}`
+      ]
+    };
+  }
+
+  if (message?.video_note?.file_id) {
+    const note = message.video_note;
+    return {
+      type: "video_note",
+      fileId: note.file_id,
+      fileSize: note.file_size,
+      lines: [
+        `attachment type: video note`,
+        `duration: ${note.duration ?? "unknown"} s`,
+        `length: ${note.length || "unknown"}`,
+        `size: ${formatByteSize(note.file_size)}`
+      ]
+    };
+  }
+
+  return null;
+}
+
+async function buildMediaPrompt(ctx: any): Promise<string | null> {
+  const media = detectTelegramMedia(ctx.message);
+  if (!media) {
+    return null;
+  }
+
+  let fileUrl = "";
+  try {
+    const link = await ctx.telegram?.getFileLink?.(media.fileId);
+    fileUrl = link ? String(link) : "";
+  } catch {
+    fileUrl = "";
+  }
+
+  let cachedPath = "";
+  let inlineText = "";
+  let downloadError = "";
+  try {
+    const cached = await cacheTelegramAttachment(media, fileUrl);
+    cachedPath = cached.cachedPath;
+    inlineText = cached.inlineText || "";
+  } catch (error) {
+    downloadError = toErrorMessage(error);
+  }
+
+  const caption = String(ctx.message?.caption || "").trim();
+  const lines = [
+    "The user sent a Telegram attachment instead of plain text.",
+    "Treat the attachment metadata below as input context for this turn.",
+    "If a local cached path is present, inspect that file directly.",
+    ...media.lines,
+    `telegram file id: ${media.fileId}`,
+    `telegram file url: ${fileUrl || "unavailable"}`,
+    `cached local path: ${cachedPath || "unavailable"}`,
+    `download status: ${downloadError ? `not cached (${downloadError})` : "cached"}`,
+    `caption: ${caption || "(none)"}`
+  ];
+
+  if (inlineText) {
+    lines.push("", "inline attachment text:", inlineText);
+  }
+
+  lines.push(
+    "",
+    caption
+      ? `User request: ${caption}`
+      : "User request: Please inspect this attachment and help based on the available metadata."
+  );
+
+  return lines.join("\n");
 }
 
 export function registerHandlers({
@@ -892,4 +1245,36 @@ export function registerHandlers({
       );
     }
   });
+
+  const handleMediaMessage = async (ctx: any) => {
+    const locale = localeOf(ctx.chat.id);
+
+    try {
+      const prompt = await buildMediaPrompt(ctx);
+      if (!prompt) {
+        return;
+      }
+
+      const result = await ptyManager.sendPrompt(ctx, prompt);
+      await handlePromptResult(ctx, locale, result);
+    } catch (error) {
+      await sendChunkedMarkdown(
+        ctx,
+        t(locale, "processingFailed", { error: toErrorMessage(error) })
+      );
+    }
+  };
+
+  for (const event of [
+    "photo",
+    "document",
+    "video",
+    "audio",
+    "voice",
+    "animation",
+    "sticker",
+    "video_note"
+  ]) {
+    bot.on(event, handleMediaMessage);
+  }
 }

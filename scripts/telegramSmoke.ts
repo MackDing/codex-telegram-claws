@@ -29,9 +29,13 @@ const expectedUsername = String(process.env.TELEGRAM_EXPECTED_USERNAME || "")
   .replace(/^@/, "");
 const smokeChatId = String(process.env.TELEGRAM_SMOKE_CHAT_ID || "").trim();
 
-if (!token) {
-  console.error("Missing BOT_TOKEN.");
+function fail(message: string): never {
+  process.stderr.write(`${message}\n`);
   process.exit(1);
+}
+
+if (!token) {
+  fail("Missing BOT_TOKEN.");
 }
 
 const getMeResponse = await fetch(`https://api.telegram.org/bot${token}/getMe`);
@@ -39,10 +43,9 @@ const getMePayload =
   (await getMeResponse.json()) as TelegramApiResponse<TelegramBotUser>;
 
 if (!getMeResponse.ok || !getMePayload?.ok) {
-  console.error(
+  fail(
     `Telegram getMe failed: ${getMePayload?.description || getMeResponse.status}`
   );
-  process.exit(1);
 }
 
 const botUser = getMePayload.result;
@@ -50,8 +53,7 @@ console.log(`Bot username: @${botUser.username}`);
 console.log(`Bot id: ${botUser.id}`);
 
 if (expectedUsername && botUser.username !== expectedUsername) {
-  console.error(`Expected @${expectedUsername}, got @${botUser.username}`);
-  process.exit(1);
+  fail(`Expected @${expectedUsername}, got @${botUser.username}`);
 }
 
 if (smokeChatId) {
@@ -73,10 +75,9 @@ if (smokeChatId) {
     (await sendResponse.json()) as TelegramApiResponse<TelegramSendMessageResult>;
 
   if (!sendResponse.ok || !sendPayload?.ok) {
-    console.error(
+    fail(
       `Telegram sendMessage failed: ${sendPayload?.description || sendResponse.status}`
     );
-    process.exit(1);
   }
 
   console.log(`Smoke message sent to chat ${smokeChatId}.`);

@@ -1,5 +1,9 @@
 import fs from "node:fs";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  type ChildProcessWithoutNullStreams
+} from "node:child_process";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -42,6 +46,27 @@ interface TelegramApiLike {
     text: string,
     options?: Record<string, unknown>
   ): Promise<TelegramMessage>;
+  sendChatAction?(chatId: string | number, action: string): Promise<unknown>;
+  sendDocument?(
+    chatId: string | number,
+    document: unknown,
+    options?: Record<string, unknown>
+  ): Promise<unknown>;
+  sendPhoto?(
+    chatId: string | number,
+    photo: unknown,
+    options?: Record<string, unknown>
+  ): Promise<unknown>;
+  sendVideo?(
+    chatId: string | number,
+    video: unknown,
+    options?: Record<string, unknown>
+  ): Promise<unknown>;
+  sendAudio?(
+    chatId: string | number,
+    audio: unknown,
+    options?: Record<string, unknown>
+  ): Promise<unknown>;
   editMessageText(
     chatId: string | number,
     messageId: number,
@@ -109,6 +134,9 @@ interface RunnerSession {
   lastRendered: string;
   flushQueue: Promise<void>;
   throttledFlush: ReturnType<typeof throttle>;
+  chatActionInterval: NodeJS.Timeout | null;
+  changedFiles: Set<string>;
+  baselineChangedFiles: Set<string>;
   write: ((input: string) => void) | null;
   interrupt: (() => void) | null;
   close: (() => void) | null;
@@ -384,6 +412,55 @@ const WORKFLOW_PHASE_MARKERS: ReadonlyArray<{
     ]
   }
 ];
+
+const MAX_TELEGRAM_ARTIFACTS = 3;
+const MAX_TELEGRAM_ARTIFACT_BYTES = 10 * 1024 * 1024;
+
+function getArtifactTransport(filePath: string): {
+  action: "upload_document" | "upload_photo" | "upload_video" | "upload_voice";
+  method: "sendDocument" | "sendPhoto" | "sendVideo" | "sendAudio";
+} {
+  const extension = path.extname(filePath).toLowerCase();
+
+  if ([".png", ".jpg", ".jpeg", ".webp"].includes(extension)) {
+    return {
+      action: "upload_photo",
+      method: "sendPhoto"
+    };
+  }
+
+  if ([".mp4", ".mov", ".webm", ".mkv"].includes(extension)) {
+    return {
+      action: "upload_video",
+      method: "sendVideo"
+    };
+  }
+
+  if ([".mp3", ".wav", ".m4a", ".ogg"].includes(extension)) {
+    return {
+      action: "upload_voice",
+      method: "sendAudio"
+    };
+  }
+
+  return {
+    action: "upload_document",
+    method: "sendDocument"
+  };
+}
+
+function normalizeGitStatusPath(rawPath: string, workdir: string): string {
+  const normalized = String(rawPath || "").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const nextPath = normalized.includes(" -> ")
+    ? normalized.split(" -> ").at(-1) || normalized
+    : normalized;
+
+  return path.resolve(workdir, nextPath);
+}
 
 function detectWorkflowPhase(rawText: string): WorkflowPhase | null {
   const normalized = String(rawText || "").toLowerCase();
@@ -909,6 +986,7 @@ export class PtyManager {
       options.workdir || state.currentWorkdir || this.config.runner.cwd
     );
     const projectState = this.ensureProjectState(key, workdir);
+    const baselineChangedFiles = this.listChangedFilesFromGit(workdir);
     const session: RunnerSession = {
       chatId: key,
       mode,
@@ -930,6 +1008,9 @@ export class PtyManager {
         this.config.runner.throttleMs,
         { leading: true, trailing: true }
       ),
+      chatActionInterval: null,
+      changedFiles: new Set(),
+      baselineChangedFiles,
       write: null,
       interrupt: null,
       close: null,
@@ -937,7 +1018,56 @@ export class PtyManager {
     };
 
     this.sessions.set(key, session);
+    this.startChatActionHeartbeat(session);
     return session;
+  }
+
+  startChatActionHeartbeat(session: RunnerSession): void {
+    const sendChatAction = this.bot.telegram.sendChatAction;
+    if (!sendChatAction) {
+      return;
+    }
+
+    const send = () =>
+      sendChatAction
+        .call(this.bot.telegram, session.chatId, "typing")
+        .catch(() => {});
+
+    send();
+    session.chatActionInterval = setInterval(send, 4000);
+  }
+
+  stopChatActionHeartbeat(session: RunnerSession): void {
+    if (!session.chatActionInterval) {
+      return;
+    }
+
+    clearInterval(session.chatActionInterval);
+    session.chatActionInterval = null;
+  }
+
+  listChangedFilesFromGit(workdir: string): Set<string> {
+    try {
+      const output = execFileSync(
+        "git",
+        ["status", "--short", "--untracked-files=all"],
+        {
+          cwd: workdir,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"]
+        }
+      );
+
+      return new Set(
+        output
+          .split("\n")
+          .map((line) => line.slice(3))
+          .map((entry) => normalizeGitStatusPath(entry, workdir))
+          .filter(Boolean)
+      );
+    } catch {
+      return new Set();
+    }
   }
 
   captureSessionMetadata(session: RunnerSession): void {
@@ -956,6 +1086,7 @@ export class PtyManager {
 
   updateSdkRenderableItem(session: RunnerSession, item: ThreadItem): void {
     const text = summarizeSdkItem(item, this.isVerbose(session.chatId));
+    this.captureChangedFiles(session, item);
     const hasEntry = session.renderableItems.has(item.id);
 
     if (!text) {
@@ -987,11 +1118,144 @@ export class PtyManager {
       .trim();
   }
 
+  captureChangedFiles(session: RunnerSession, item: ThreadItem): void {
+    if (item.type !== "file_change") {
+      return;
+    }
+
+    for (const change of item.changes || []) {
+      if (!change?.path) {
+        continue;
+      }
+
+      session.changedFiles.add(path.resolve(session.workdir, change.path));
+    }
+  }
+
+  async sendChangedFilesToTelegram(session: RunnerSession): Promise<void> {
+    if (!session.changedFiles.size) {
+      return;
+    }
+
+    const eligibleFiles = [...session.changedFiles]
+      .filter((filePath) => {
+        if (!fs.existsSync(filePath)) {
+          console.info(
+            `[artifacts] skipping missing file for chat ${session.chatId}: ${filePath}`
+          );
+          return false;
+        }
+
+        try {
+          const stat = fs.statSync(filePath);
+          if (!stat.isFile()) {
+            console.info(
+              `[artifacts] skipping non-file path for chat ${session.chatId}: ${filePath}`
+            );
+            return false;
+          }
+          if (stat.size > MAX_TELEGRAM_ARTIFACT_BYTES) {
+            console.info(
+              `[artifacts] skipping oversized file for chat ${session.chatId}: ${filePath} (${stat.size} bytes)`
+            );
+            return false;
+          }
+
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .sort();
+    const candidates = eligibleFiles.slice(0, MAX_TELEGRAM_ARTIFACTS);
+
+    if (!candidates.length) {
+      console.info(
+        `[artifacts] no eligible files to send for chat ${session.chatId}`
+      );
+    }
+
+    if (candidates.length > 1) {
+      const fileLines = candidates.map((filePath) => {
+        const relativePath =
+          path.relative(session.workdir, filePath) || path.basename(filePath);
+        return `- ${relativePath}`;
+      });
+      const omittedCount = Math.max(
+        0,
+        eligibleFiles.length - candidates.length
+      );
+
+      await this.bot.telegram
+        .sendMessage(
+          session.chatId,
+          t(this.getLanguage(session.chatId), "artifactBatchNotice", {
+            sentCount: candidates.length,
+            totalCount: eligibleFiles.length,
+            fileLines,
+            omittedCount
+          })
+        )
+        .catch(() => {});
+    }
+
+    for (const filePath of candidates) {
+      const relativePath =
+        path.relative(session.workdir, filePath) || path.basename(filePath);
+      const transport = getArtifactTransport(filePath);
+      const sender = this.bot.telegram[transport.method];
+
+      if (!sender) {
+        console.warn(
+          `[artifacts] telegram method ${transport.method} is unavailable for ${relativePath}`
+        );
+        continue;
+      }
+
+      await this.bot.telegram
+        .sendChatAction?.(session.chatId, transport.action)
+        .catch(() => {});
+
+      await sender
+        .call(
+          this.bot.telegram,
+          session.chatId,
+          {
+            source: filePath,
+            filename: path.basename(filePath)
+          },
+          {
+            caption: `Generated file: ${relativePath}`
+          }
+        )
+        .then(() => {
+          console.info(
+            `[artifacts] sent ${relativePath} to chat ${session.chatId} via ${transport.method}`
+          );
+        })
+        .catch((error: unknown) => {
+          console.warn(
+            `[artifacts] failed to send ${relativePath} to chat ${session.chatId}: ${toErrorMessage(error)}`
+          );
+        });
+    }
+  }
+
   async finalizeSession(
     session: RunnerSession,
     exitCode: number | null,
     signal: ExitSignal
   ): Promise<void> {
+    this.stopChatActionHeartbeat(session);
+    const changedNow = this.listChangedFilesFromGit(session.workdir);
+    for (const filePath of changedNow) {
+      if (!session.baselineChangedFiles.has(filePath)) {
+        session.changedFiles.add(filePath);
+      }
+    }
+    await session.flushQueue.catch(() => {});
+    await this.flushToTelegram(session.chatId).catch(() => {});
+    await this.sendChangedFilesToTelegram(session);
     this.captureSessionMetadata(session);
     const projectState = this.ensureProjectState(
       session.chatId,
@@ -1132,6 +1396,7 @@ export class PtyManager {
     );
 
     proc.on("error", async (error) => {
+      this.stopChatActionHeartbeat(session);
       await this.bot.telegram
         .sendMessage(
           session.chatId,

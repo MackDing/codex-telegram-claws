@@ -78,7 +78,6 @@ Key design goals:
 
 ## Screenshot
 
-
 ### Install
 
 ```bash
@@ -281,6 +280,9 @@ GitHub skill:
 Telegram adaptation notes:
 
 - Plain text messages behave like a normal Codex conversation turn
+- Photo, document, video, audio, voice, animation, sticker, and video-note messages are also routed to Codex as structured attachment prompts
+- Media captions are treated as the user request; attachment metadata and Telegram file links are included when available
+- On SDK runs, files created or updated in the current Codex turn can be sent back to the Telegram user as document attachments
 - `/exec` runs a one-off Codex task and does not overwrite the saved project conversation slot
 - `/auto` runs a one-off Codex task with `approvalPolicy=never` on the SDK backend, or `codex exec --full-auto` on the CLI backend
 - `/new` is implemented by the bot and resets the current chat session
@@ -304,6 +306,7 @@ Telegram adaptation notes:
 Codex output is streamed with throttled `editMessageText` updates.
 
 - Throttle: controlled by `STREAM_THROTTLE_MS` (default `1200`)
+- While Codex is still working, the bot keeps Telegram's `typing` indicator alive so the chat shows that a reply is in progress
 - Long output: auto-chunked to Telegram-safe message sizes
 - MarkdownV2: escaped to avoid parse failures
 - Reasoning tags: `<think>...</think>` extracted and rendered as:

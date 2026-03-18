@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerHandlers } from "../src/bot/handlers.js";
@@ -16,8 +17,12 @@ interface TestContext {
   from: {
     id: number;
   };
-  message: {
-    text: string;
+  telegram?: {
+    getFileLink?: (fileId: string) => Promise<string>;
+  };
+  message: Record<string, unknown> & {
+    text?: string;
+    caption?: string;
   };
   callbackQuery?: {
     data?: string;
@@ -54,6 +59,7 @@ function createContext(text: string, chatId = 1): TestContext {
     from: {
       id: chatId
     },
+    telegram: {},
     message: {
       text
     },
@@ -68,10 +74,19 @@ function createContext(text: string, chatId = 1): TestContext {
   };
 }
 
+function createMediaContext(
+  message: TestContext["message"],
+  chatId = 1
+): TestContext {
+  const ctx = createContext("", chatId);
+  ctx.message = message;
+  return ctx;
+}
+
 function createDependencies(
   overrides: {
-    sendPrompt?: () => Promise<unknown>;
-    continuePendingPrompt?: () => Promise<unknown>;
+    sendPrompt?: (...args: any[]) => Promise<unknown>;
+    continuePendingPrompt?: (...args: any[]) => Promise<unknown>;
     routeMessage?: (text: string) => Promise<unknown>;
     githubExecute?: () => Promise<unknown>;
     getStatus?: () => Record<string, unknown>;
@@ -424,4 +439,223 @@ test("text handler shows guidance when plain-text github write actions are block
   assert.equal(ctx.replies.length > 0, true);
   assert.match(ctx.replies[0].text, /explicit/i);
   assert.match(ctx.replies[0].text, /\/gh create repo/i);
+});
+
+test("photo messages are converted into Codex prompts with caption and file link", async () => {
+  const prompts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  const { bot } = createDependencies({
+    sendPrompt: async (_ctx: unknown, prompt: string) => {
+      prompts.push(prompt);
+      return {
+        started: true,
+        mode: "sdk"
+      };
+    }
+  });
+  const ctx = createMediaContext({
+    caption: "帮我看看这张图里有什么问题",
+    photo: [
+      {
+        file_id: "photo-small",
+        width: 90,
+        height: 90,
+        file_size: 1000
+      },
+      {
+        file_id: "photo-large",
+        width: 1280,
+        height: 720,
+        file_size: 245760
+      }
+    ]
+  });
+  ctx.telegram = {
+    getFileLink: async (fileId: string) =>
+      `https://example.test/files/${fileId}.jpg`
+  };
+  const photoHandler = bot.events.get("photo");
+
+  if (!photoHandler) {
+    throw new Error("Expected photo handler to be registered");
+  }
+
+  globalThis.fetch = async () =>
+    new Response(Buffer.from("fake image bytes"), {
+      status: 200,
+      headers: {
+        "content-length": "16",
+        "content-type": "image/jpeg"
+      }
+    });
+
+  try {
+    await photoHandler(ctx);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /attachment type: photo/i);
+  assert.match(prompts[0], /1280x720/);
+  assert.match(prompts[0], /telegram file id: photo-large/);
+  assert.match(prompts[0], /https:\/\/example\.test\/files\/photo-large\.jpg/);
+  assert.match(
+    prompts[0],
+    /cached local path: \/tmp\/codexclaw-telegram-attachments\//
+  );
+  assert.match(prompts[0], /download status: cached/);
+  assert.match(prompts[0], /帮我看看这张图里有什么问题/);
+});
+
+test("document messages include inline text when the attachment is readable text", async () => {
+  const prompts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  const { bot } = createDependencies({
+    sendPrompt: async (_ctx: unknown, prompt: string) => {
+      prompts.push(prompt);
+      return {
+        started: true,
+        mode: "sdk"
+      };
+    }
+  });
+  const ctx = createMediaContext({
+    document: {
+      file_id: "doc-1",
+      file_name: "error.log",
+      mime_type: "text/plain",
+      file_size: 4096
+    }
+  });
+  ctx.telegram = {
+    getFileLink: async (fileId: string) =>
+      `https://example.test/files/${fileId}.txt`
+  };
+  const documentHandler = bot.events.get("document");
+
+  if (!documentHandler) {
+    throw new Error("Expected document handler to be registered");
+  }
+
+  globalThis.fetch = async () =>
+    new Response(Buffer.from("line one\nline two\nline three\n"), {
+      status: 200,
+      headers: {
+        "content-length": "28",
+        "content-type": "text/plain"
+      }
+    });
+
+  try {
+    await documentHandler(ctx);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /attachment type: document/i);
+  assert.match(prompts[0], /file name: error\.log/i);
+  assert.match(prompts[0], /mime type: text\/plain/i);
+  assert.match(prompts[0], /inline attachment text:/i);
+  assert.match(prompts[0], /line one/);
+  assert.match(prompts[0], /caption: \(none\)/i);
+});
+
+test("document messages fall back cleanly when attachment download fails", async () => {
+  const prompts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  const { bot } = createDependencies({
+    sendPrompt: async (_ctx: unknown, prompt: string) => {
+      prompts.push(prompt);
+      return {
+        started: true,
+        mode: "sdk"
+      };
+    }
+  });
+  const ctx = createMediaContext({
+    document: {
+      file_id: "doc-2",
+      file_name: "broken.log",
+      mime_type: "text/plain",
+      file_size: 42
+    }
+  });
+  ctx.telegram = {
+    getFileLink: async (fileId: string) =>
+      `https://example.test/files/${fileId}.txt`
+  };
+  const documentHandler = bot.events.get("document");
+
+  if (!documentHandler) {
+    throw new Error("Expected document handler to be registered");
+  }
+
+  globalThis.fetch = async () =>
+    new Response("denied", {
+      status: 403
+    });
+
+  try {
+    await documentHandler(ctx);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /cached local path: unavailable/i);
+  assert.match(prompts[0], /download status: not cached/i);
+});
+
+test("cached text attachments are actually written to disk", async () => {
+  const prompts: string[] = [];
+  const originalFetch = globalThis.fetch;
+  const { bot } = createDependencies({
+    sendPrompt: async (_ctx: unknown, prompt: string) => {
+      prompts.push(prompt);
+      return {
+        started: true,
+        mode: "sdk"
+      };
+    }
+  });
+  const ctx = createMediaContext({
+    document: {
+      file_id: "doc-cache",
+      file_name: "sample.txt",
+      mime_type: "text/plain",
+      file_size: 12
+    }
+  });
+  ctx.telegram = {
+    getFileLink: async () => "https://example.test/files/sample.txt"
+  };
+  const documentHandler = bot.events.get("document");
+
+  if (!documentHandler) {
+    throw new Error("Expected document handler to be registered");
+  }
+
+  globalThis.fetch = async () =>
+    new Response(Buffer.from("cached hello"), {
+      status: 200,
+      headers: {
+        "content-length": "12",
+        "content-type": "text/plain"
+      }
+    });
+
+  try {
+    await documentHandler(ctx);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const cachedPathMatch = prompts[0]?.match(
+    /cached local path: (\/tmp\/codexclaw-telegram-attachments\/[^\n]+)/
+  );
+  assert.ok(cachedPathMatch);
+  const cachedContent = await fs.readFile(cachedPathMatch[1], "utf8");
+  assert.equal(cachedContent, "cached hello");
 });

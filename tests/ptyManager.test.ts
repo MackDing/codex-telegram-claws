@@ -30,9 +30,14 @@ type FakeCall =
 
 interface SentMessageRecord {
   chatId: string | number;
-  text: string;
+  text?: string;
   messageId?: number;
   edited?: boolean;
+  document?: unknown;
+  photo?: unknown;
+  video?: unknown;
+  audio?: unknown;
+  options?: Record<string, unknown>;
 }
 
 function createManager(overrides: ManagerOverrides = {}) {
@@ -40,6 +45,10 @@ function createManager(overrides: ManagerOverrides = {}) {
   const workspaceRoot = overrides.workspaceRoot || runnerCwd;
   const telegram: TelegramStub = overrides.telegram || {
     sendMessage: async () => ({ message_id: 1 }),
+    sendDocument: async () => ({ message_id: 1 }),
+    sendPhoto: async () => ({ message_id: 1 }),
+    sendVideo: async () => ({ message_id: 1 }),
+    sendAudio: async () => ({ message_id: 1 }),
     editMessageText: async () => ({}),
     deleteMessage: async () => ({})
   };
@@ -486,6 +495,9 @@ test("pty manager stores SDK thread ids per project and resumes them", async () 
   if (!firstMessage) {
     throw new Error("Expected at least one Telegram message");
   }
+  if (!firstMessage.text) {
+    throw new Error("Expected the Telegram record to include text");
+  }
   assert.match(firstMessage.text, /Project A ready/);
 
   await manager.sendPrompt({ chat: { id: 9 } }, "continue project a");
@@ -496,6 +508,9 @@ test("pty manager stores SDK thread ids per project and resumes them", async () 
   const resumedMessage = sentMessages.at(-1);
   if (!resumedMessage) {
     throw new Error("Expected a resumed Telegram message");
+  }
+  if (!resumedMessage.text) {
+    throw new Error("Expected the resumed Telegram record to include text");
   }
   assert.match(resumedMessage.text, /Project A resumed/);
 });
@@ -689,5 +704,389 @@ test("pty manager shows exec fallback notices when verbose output is on", async 
   await manager.sendPrompt({ chat: { id: 77 } }, "who are u");
 
   assert.equal(sentMessages.length, 1);
+  if (!sentMessages[0].text) {
+    throw new Error("Expected the fallback notice to include text");
+  }
   assert.match(sentMessages[0].text, /Interactive terminal is unavailable/);
+});
+
+test("pty manager sends Telegram typing actions while a session is active", async () => {
+  const chatActions: Array<{ chatId: string | number; action: string }> = [];
+  let releaseTurn = () => {};
+  const turnReleased = new Promise<void>((resolve) => {
+    releaseTurn = () => resolve();
+  });
+  const manager = createManager({
+    backend: "sdk",
+    telegram: {
+      sendMessage: async () => ({ message_id: 1 }),
+      sendChatAction: async (chatId: string | number, action: string) => {
+        chatActions.push({ chatId, action });
+        return {};
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    },
+    codexClientFactory: createFakeCodexClient([
+      {
+        events: async function* () {
+          await turnReleased;
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-1",
+              type: "agent_message",
+              text: "done"
+            }
+          };
+          yield {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1
+            }
+          };
+        }
+      }
+    ])
+  });
+
+  await manager.sendPrompt({ chat: { id: 88 } }, "wait a bit");
+  await waitFor(() => chatActions.length > 0);
+
+  assert.deepEqual(chatActions[0], { chatId: "88", action: "typing" });
+  releaseTurn();
+  await waitFor(() => !manager.getStatus(88).active);
+});
+
+test("pty manager sends changed files back to Telegram after an SDK run", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "claws-artifacts-"));
+  fs.writeFileSync(path.join(root, "report.txt"), "artifact body");
+  const sentMessages: SentMessageRecord[] = [];
+
+  const manager = createManager({
+    backend: "sdk",
+    runnerCwd: root,
+    workspaceRoot: root,
+    telegram: {
+      sendMessage: async (chatId: string | number, text: string) => {
+        sentMessages.push({ chatId, text });
+        return { message_id: sentMessages.length };
+      },
+      sendChatAction: async () => ({}),
+      sendDocument: async (
+        chatId: string | number,
+        document: unknown,
+        options?: Record<string, unknown>
+      ) => {
+        sentMessages.push({ chatId, document, options });
+        return { message_id: sentMessages.length };
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    },
+    codexClientFactory: createFakeCodexClient([
+      {
+        events: async function* () {
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-file",
+              type: "file_change",
+              changes: [{ kind: "write", path: "report.txt" }]
+            }
+          };
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-msg",
+              type: "agent_message",
+              text: "generated report"
+            }
+          };
+          yield {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1
+            }
+          };
+        }
+      }
+    ])
+  });
+
+  await manager.sendPrompt({ chat: { id: 33 } }, "make a report");
+  await waitFor(() => !manager.getStatus(33).active);
+
+  const artifact = sentMessages.find((entry) => Boolean(entry.document));
+  assert.ok(artifact);
+  assert.equal(artifact.chatId, "33");
+  assert.deepEqual(artifact.options, {
+    caption: "Generated file: report.txt"
+  });
+});
+
+test("pty manager announces the file list when multiple artifacts are being sent", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "claws-batch-artifacts-"));
+  fs.writeFileSync(path.join(root, "a.txt"), "A");
+  fs.writeFileSync(path.join(root, "b.txt"), "B");
+  const sentMessages: SentMessageRecord[] = [];
+
+  const manager = createManager({
+    backend: "sdk",
+    runnerCwd: root,
+    workspaceRoot: root,
+    telegram: {
+      sendMessage: async (chatId: string | number, text: string) => {
+        sentMessages.push({ chatId, text });
+        return { message_id: sentMessages.length };
+      },
+      sendChatAction: async () => ({}),
+      sendDocument: async (
+        chatId: string | number,
+        document: unknown,
+        options?: Record<string, unknown>
+      ) => {
+        sentMessages.push({ chatId, document, options });
+        return { message_id: sentMessages.length };
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    },
+    codexClientFactory: createFakeCodexClient([
+      {
+        events: async function* () {
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-file-1",
+              type: "file_change",
+              changes: [{ kind: "write", path: "a.txt" }]
+            }
+          };
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-file-2",
+              type: "file_change",
+              changes: [{ kind: "write", path: "b.txt" }]
+            }
+          };
+          yield {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1
+            }
+          };
+        }
+      }
+    ])
+  });
+
+  await manager.sendPrompt({ chat: { id: 34 } }, "make two files");
+  await waitFor(() => !manager.getStatus(34).active);
+
+  const notice = sentMessages.find(
+    (entry) =>
+      entry.text && /Sending these Telegram attachments/i.test(entry.text)
+  );
+  assert.ok(notice);
+  assert.match(notice.text || "", /a\.txt/);
+  assert.match(notice.text || "", /b\.txt/);
+
+  const artifacts = sentMessages.filter((entry) => Boolean(entry.document));
+  assert.equal(artifacts.length, 2);
+});
+
+test("pty manager falls back to git diff artifacts for sdk sessions", async () => {
+  const root = fs.mkdtempSync(
+    path.join(os.tmpdir(), "claws-sdk-git-artifacts-")
+  );
+  fs.mkdirSync(path.join(root, ".git"));
+  fs.writeFileSync(path.join(root, "weather.png"), "png-bytes");
+  const sentMessages: SentMessageRecord[] = [];
+
+  const manager = createManager({
+    backend: "sdk",
+    runnerCwd: root,
+    workspaceRoot: root,
+    telegram: {
+      sendMessage: async () => ({ message_id: 1 }),
+      sendChatAction: async () => ({}),
+      sendDocument: async () => ({ message_id: 1 }),
+      sendPhoto: async (
+        chatId: string | number,
+        photo: unknown,
+        options?: Record<string, unknown>
+      ) => {
+        sentMessages.push({ chatId, photo, options });
+        return { message_id: sentMessages.length };
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    },
+    codexClientFactory: createFakeCodexClient([
+      {
+        events: async function* () {
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-msg",
+              type: "agent_message",
+              text: "weather chart ready"
+            }
+          };
+          yield {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1
+            }
+          };
+        }
+      }
+    ])
+  });
+
+  const originalListChangedFilesFromGit =
+    manager.listChangedFilesFromGit.bind(manager);
+  let callCount = 0;
+  manager.listChangedFilesFromGit = () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return new Set();
+    }
+
+    return new Set([path.join(root, "weather.png")]);
+  };
+
+  await manager.sendPrompt({ chat: { id: 66 } }, "make a weather png");
+  await waitFor(() => !manager.getStatus(66).active);
+  manager.listChangedFilesFromGit = originalListChangedFilesFromGit;
+
+  const artifact = sentMessages.find((entry) => Boolean(entry.photo));
+  assert.ok(artifact);
+  assert.equal(artifact.chatId, "66");
+  assert.deepEqual(artifact.options, {
+    caption: "Generated file: weather.png"
+  });
+});
+
+test("pty manager sends generated images back as Telegram photos", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "claws-photo-artifacts-"));
+  fs.writeFileSync(path.join(root, "preview.png"), "png-bytes");
+  const sentMessages: SentMessageRecord[] = [];
+
+  const manager = createManager({
+    backend: "sdk",
+    runnerCwd: root,
+    workspaceRoot: root,
+    telegram: {
+      sendMessage: async () => ({ message_id: 1 }),
+      sendChatAction: async () => ({}),
+      sendDocument: async () => ({ message_id: 1 }),
+      sendPhoto: async (
+        chatId: string | number,
+        photo: unknown,
+        options?: Record<string, unknown>
+      ) => {
+        sentMessages.push({ chatId, photo, options });
+        return { message_id: sentMessages.length };
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    },
+    codexClientFactory: createFakeCodexClient([
+      {
+        events: async function* () {
+          yield {
+            type: "item.completed",
+            item: {
+              id: "item-photo",
+              type: "file_change",
+              changes: [{ kind: "write", path: "preview.png" }]
+            }
+          };
+          yield {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1
+            }
+          };
+        }
+      }
+    ])
+  });
+
+  await manager.sendPrompt({ chat: { id: 44 } }, "make a preview image");
+  await waitFor(() => !manager.getStatus(44).active);
+
+  const photoArtifact = sentMessages.find((entry) => Boolean(entry.photo));
+  assert.ok(photoArtifact);
+  assert.equal(photoArtifact.chatId, "44");
+  assert.deepEqual(photoArtifact.options, {
+    caption: "Generated file: preview.png"
+  });
+});
+
+test("pty manager sends newly changed git files back for cli sessions", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "claws-cli-artifacts-"));
+  fs.mkdirSync(path.join(root, ".git"));
+  fs.writeFileSync(path.join(root, "before.txt"), "old");
+
+  const sentMessages: SentMessageRecord[] = [];
+  const manager = createManager({
+    backend: "cli",
+    runnerCwd: root,
+    workspaceRoot: root,
+    telegram: {
+      sendMessage: async () => ({ message_id: 1 }),
+      sendChatAction: async () => ({}),
+      sendDocument: async (
+        chatId: string | number,
+        document: unknown,
+        options?: Record<string, unknown>
+      ) => {
+        sentMessages.push({ chatId, document, options });
+        return { message_id: sentMessages.length };
+      },
+      editMessageText: async () => ({}),
+      deleteMessage: async () => ({})
+    }
+  });
+
+  const originalListChangedFilesFromGit =
+    manager.listChangedFilesFromGit.bind(manager);
+  let callCount = 0;
+  manager.listChangedFilesFromGit = () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return new Set([path.join(root, "before.txt")]);
+    }
+
+    return new Set([
+      path.join(root, "before.txt"),
+      path.join(root, "after.txt")
+    ]);
+  };
+
+  fs.writeFileSync(path.join(root, "after.txt"), "new");
+  const session = manager.createBaseSession("55", "exec", { workdir: root });
+  await manager.finalizeSession(session, 0, null);
+  manager.listChangedFilesFromGit = originalListChangedFilesFromGit;
+
+  const artifact = sentMessages.find((entry) => Boolean(entry.document));
+  assert.ok(artifact);
+  assert.equal(artifact.chatId, "55");
+  assert.deepEqual(artifact.options, {
+    caption: "Generated file: after.txt"
+  });
 });
