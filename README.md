@@ -6,6 +6,23 @@
 A Telegram bot that gives you remote access to `@openai/codex` through a Node.js runtime with two Codex backends: the Codex SDK and the legacy CLI/PTy path.  
 It is strictly inspired by `RichardAtCT/claude-code-telegram`, but this project is implemented for CodeX SDK/CLI + MCP + Subagent routing.
 
+
+## What Is This?
+
+This bot connects Telegram to Codex and routes tasks to the right execution surface:
+
+- **Coding tasks** -> Codex SDK threads or Codex CLI/PTy sessions
+- **Explicit tool tasks** -> Subagents (`/mcp`, `GitHub Skill`)
+- **Proactive automation** -> Cron scheduler for daily summaries and push notifications
+
+Key design goals:
+
+- Keep Codex interactive sessions smooth and stream-safe on Telegram
+- Enforce zero-trust access with whitelist-only users
+- Avoid duplicate MCP calls by separating Codex MCP vs Bot MCP responsibilities
+- Prefer the SDK backend for new installs, while keeping the CLI backend as a fallback
+
+
 ## Use This Like A Skill
 
 ### What It Does
@@ -53,20 +70,6 @@ npm run start
 
 For agent-oriented setup, see [SKILL.md](/Users/ding/Documents/Code/Github/CodexClaw/SKILL.md).
 
-## What Is This?
-
-This bot connects Telegram to Codex and routes tasks to the right execution surface:
-
-- **Coding tasks** -> Codex SDK threads or Codex CLI/PTy sessions
-- **Explicit tool tasks** -> Subagents (`/mcp`, `GitHub Skill`)
-- **Proactive automation** -> Cron scheduler for daily summaries and push notifications
-
-Key design goals:
-
-- Keep Codex interactive sessions smooth and stream-safe on Telegram
-- Enforce zero-trust access with whitelist-only users
-- Avoid duplicate MCP calls by separating Codex MCP vs Bot MCP responsibilities
-- Prefer the SDK backend for new installs, while keeping the CLI backend as a fallback
 
 ## Quick Start
 
@@ -76,70 +79,6 @@ Key design goals:
 - Codex CLI -- https://github.com/openai/codex
 - Telegram Bot Token -- from `@BotFather`
 
-## Screenshot
-
-### Install
-
-```bash
-git clone https://github.com/MackDing/CodexClaw.git
-cd CodexClaw
-npm install
-```
-
-### Configure
-
-```bash
-cp .env.example .env
-```
-
-Minimum required:
-
-```bash
-BOT_TOKEN=123456789:telegram-token
-ALLOWED_USER_IDS=123456789
-STATE_FILE=.codex-telegram-claws-state.json
-WORKSPACE_ROOT=.
-CODEX_WORKDIR=.
-CODEX_BACKEND=sdk
-```
-
-Optional safe shell:
-
-```bash
-SHELL_ENABLED=true
-SHELL_READ_ONLY=true
-SHELL_ALLOWED_COMMANDS=["pwd","ls","git status","git diff --stat","npm test","npm run check"]
-SHELL_DANGEROUS_COMMANDS=["git add","git commit","git push","rm","mv","cp","npm publish"]
-```
-
-### Run
-
-```bash
-npm run start
-```
-
-Development mode:
-
-```bash
-npm run dev
-```
-
-Validation:
-
-```bash
-npm run check
-npm run lint
-npm run format:check
-npm test
-npm run healthcheck
-npm run healthcheck:live
-```
-
-For live checks, configure your own local `.env` values after startup and keep the output local.
-
-- do not commit or paste live output containing bot usernames, chat IDs, thread IDs, or other environment-specific identifiers
-- use your own `BOT_TOKEN`, `ALLOWED_USER_IDS`, and Codex credentials locally
-- for GitHub Actions, set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_EXPECTED_USERNAME`, and `TELEGRAM_SMOKE_CHAT_ID` in repository secrets instead of hardcoding them
 
 ## Development Commands
 
